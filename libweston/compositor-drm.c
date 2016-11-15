@@ -88,6 +88,16 @@
  */
 enum wdrm_plane_property {
 	WDRM_PLANE_TYPE = 0,
+	WDRM_PLANE_SRC_X,
+	WDRM_PLANE_SRC_Y,
+	WDRM_PLANE_SRC_W,
+	WDRM_PLANE_SRC_H,
+	WDRM_PLANE_CRTC_X,
+	WDRM_PLANE_CRTC_Y,
+	WDRM_PLANE_CRTC_W,
+	WDRM_PLANE_CRTC_H,
+	WDRM_PLANE_FB_ID,
+	WDRM_PLANE_CRTC_ID,
 	WDRM_PLANE__COUNT
 };
 
@@ -107,6 +117,7 @@ enum wdrm_plane_type {
 enum wdrm_connector_property {
 	WDRM_CONNECTOR_EDID = 0,
 	WDRM_CONNECTOR_DPMS,
+	WDRM_CONNECTOR_CRTC_ID,
 	WDRM_CONNECTOR__COUNT
 };
 
@@ -137,6 +148,15 @@ struct drm_property_info {
 	uint32_t prop_id; /**< KMS property object ID */
 	unsigned int num_enum_values; /**< number of enum values */
 	struct drm_property_enum_info *enum_values; /**< array of enum values */
+};
+
+/**
+ * List of properties attached to DRM CRTCs
+ */
+enum wdrm_crtc_property {
+	WDRM_CRTC_MODE_ID = 0,
+	WDRM_CRTC_ACTIVE,
+	WDRM_CRTC__COUNT
 };
 
 /**
@@ -192,6 +212,7 @@ struct drm_backend {
 	int cursors_are_broken;
 
 	bool universal_planes;
+	bool atomic_modeset;
 
 	int use_pixman;
 
@@ -343,6 +364,8 @@ struct drm_output {
 
 	/* Holds the properties for the connector */
 	struct drm_property_info props_conn[WDRM_CONNECTOR__COUNT];
+	/* Holds the properties for the CRTC */
+	struct drm_property_info props_crtc[WDRM_CRTC__COUNT];
 
 	enum dpms_enum dpms;
 	struct backlight *backlight;
@@ -2781,6 +2804,13 @@ init_kms_caps(struct drm_backend *b)
 	weston_log("DRM: %s universal planes\n",
 		   b->universal_planes ? "supports" : "does not support");
 
+#ifdef HAVE_DRM_ATOMIC
+	ret = drmSetClientCap(b->drm.fd, DRM_CLIENT_CAP_ATOMIC, 1);
+	b->atomic_modeset = (ret == 0);
+#endif
+	weston_log("DRM: %s atomic modesetting\n",
+		   b->atomic_modeset ? "supports" : "does not support");
+
 	return 0;
 }
 
@@ -2924,6 +2954,16 @@ drm_plane_create(struct drm_backend *b, const drmModePlane *kplane,
 			.enum_values = plane_type_enums,
 			.num_enum_values = WDRM_PLANE_TYPE__COUNT,
 		},
+		[WDRM_PLANE_SRC_X] = { .name = "SRC_X", },
+		[WDRM_PLANE_SRC_Y] = { .name = "SRC_Y", },
+		[WDRM_PLANE_SRC_W] = { .name = "SRC_W", },
+		[WDRM_PLANE_SRC_H] = { .name = "SRC_H", },
+		[WDRM_PLANE_CRTC_X] = { .name = "CRTC_X", },
+		[WDRM_PLANE_CRTC_Y] = { .name = "CRTC_Y", },
+		[WDRM_PLANE_CRTC_W] = { .name = "CRTC_W", },
+		[WDRM_PLANE_CRTC_H] = { .name = "CRTC_H", },
+		[WDRM_PLANE_FB_ID] = { .name = "FB_ID", },
+		[WDRM_PLANE_CRTC_ID] = { .name = "CRTC_ID", },
 	};
 
 	/* With universal planes, everything is a DRM plane; without
@@ -3098,7 +3138,6 @@ create_sprites(struct drm_backend *b)
 	drmModePlane *kplane;
 	struct drm_plane *drm_plane;
 	uint32_t i;
-
 	kplane_res = drmModeGetPlaneResources(b->drm.fd);
 	if (!kplane_res) {
 		weston_log("failed to get plane resources: %s\n",
@@ -4093,6 +4132,7 @@ drm_output_destroy(struct weston_output *base)
 	weston_output_destroy(&output->base);
 
 	drm_property_info_free(output->props_conn, WDRM_CONNECTOR__COUNT);
+	drm_property_info_free(output->props_crtc, WDRM_CRTC__COUNT);
 
 	drmModeFreeConnector(output->connector);
 
@@ -4210,6 +4250,11 @@ create_output_for_connector(struct drm_backend *b,
 	static const struct drm_property_info connector_props[] = {
 		[WDRM_CONNECTOR_EDID] = { .name = "EDID" },
 		[WDRM_CONNECTOR_DPMS] = { .name = "DPMS" },
+		[WDRM_CONNECTOR_CRTC_ID] = { .name = "CRTC_ID", },
+	};
+	static const struct drm_property_info crtc_props[] = {
+		[WDRM_CRTC_MODE_ID] = { .name = "MODE_ID", },
+		[WDRM_CRTC_ACTIVE] = { .name = "ACTIVE", },
 	};
 
 	i = find_crtc_for_connector(b, resources, connector);
@@ -4252,6 +4297,16 @@ create_output_for_connector(struct drm_backend *b,
 	drm_property_info_update(b, connector_props, output->props_conn,
 				 WDRM_CONNECTOR__COUNT, props);
 	find_and_parse_output_edid(b, output, props);
+	drmModeFreeObjectProperties(props);
+
+	props = drmModeObjectGetProperties(b->drm.fd, output->crtc_id,
+					   DRM_MODE_OBJECT_CRTC);
+	if (!props) {
+		weston_log("failed to get CRTC properties\n");
+		goto err;
+	}
+	drm_property_info_update(b, crtc_props, output->props_crtc,
+				 WDRM_CRTC__COUNT, props);
 	drmModeFreeObjectProperties(props);
 
 	output->state_cur = drm_output_state_alloc(output, NULL);
