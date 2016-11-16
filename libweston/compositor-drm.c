@@ -480,6 +480,12 @@ drm_output_pageflip_timer_create(struct drm_output *output)
 	return 0;
 }
 
+static inline struct drm_mode *
+to_drm_mode(struct weston_mode *base)
+{
+	return container_of(base, struct drm_mode, base);
+}
+
 /**
  * Get the current value of a KMS property
  *
@@ -1761,7 +1767,7 @@ drm_output_apply_state(struct drm_output_state *state)
 	assert(scanout_state->src_w == scanout_state->dest_w << 16);
 	assert(scanout_state->src_h == scanout_state->dest_h << 16);
 
-	mode = container_of(output->base.current_mode, struct drm_mode, base);
+	mode = to_drm_mode(output->base.current_mode);
 	if (!scanout_plane->state_cur->fb ||
 	    scanout_plane->state_cur->fb->stride != scanout_state->fb->stride) {
 		ret = drmModeSetCrtc(backend->drm.fd, output->crtc_id,
