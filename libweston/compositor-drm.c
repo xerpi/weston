@@ -243,7 +243,10 @@ struct drm_fb {
 
 	int refcnt;
 
-	uint32_t fb_id, stride, handle, size;
+	uint32_t fb_id, size;
+	uint32_t handles[4];
+	uint32_t strides[4];
+	uint32_t offsets[4];
 	const struct pixel_format_info *format;
 	int width, height;
 	int fd;
@@ -762,7 +765,7 @@ drm_fb_destroy_dumb(struct drm_fb *fb)
 		munmap(fb->map, fb->size);
 
 	memset(&destroy_arg, 0, sizeof(destroy_arg));
-	destroy_arg.handle = fb->handle;
+	destroy_arg.handle = fb->handles[0];
 	drmIoctl(fb->fd, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy_arg);
 
 	drm_fb_destroy(fb);
@@ -781,16 +784,11 @@ drm_fb_destroy_gbm(struct gbm_bo *bo, void *data)
 static int
 drm_fb_addfb(struct drm_fb *fb)
 {
-	uint32_t handles[4] = { 0 }, pitches[4] = { 0 }, offsets[4] = { 0 };
 	int ret;
 
-	handles[0] = fb->handle;
-	pitches[0] = fb->stride;
-	offsets[0] = 0;
-
-	ret = drmModeAddFB2(fb->fd, fb->width, fb->height,
-			    fb->format->format, handles, pitches,
-			    offsets, &fb->fb_id, 0);
+	ret = drmModeAddFB2(fb->fd, fb->width, fb->height, fb->format->format,
+			    fb->handles, fb->strides, fb->offsets, &fb->fb_id,
+			    0);
 	if (ret == 0)
 		return 0;
 
@@ -799,9 +797,13 @@ drm_fb_addfb(struct drm_fb *fb)
 	if (!fb->format->depth || !fb->format->bpp)
 		return ret;
 
+	/* Cannot fall back to AddFB for multi-planar formats either. */
+	if (fb->handles[1] || fb->handles[2] || fb->handles[3])
+		return ret;
+
 	ret = drmModeAddFB(fb->fd, fb->width, fb->height,
 			   fb->format->depth, fb->format->bpp,
-			   fb->stride, fb->handle, &fb->fb_id);
+			   fb->strides[0], fb->handles[0], &fb->fb_id);
 	return ret;
 }
 
@@ -844,8 +846,8 @@ drm_fb_create_dumb(struct drm_backend *b, int width, int height,
 		goto err_fb;
 
 	fb->type = BUFFER_PIXMAN_DUMB;
-	fb->handle = create_arg.handle;
-	fb->stride = create_arg.pitch;
+	fb->handles[0] = create_arg.handle;
+	fb->strides[0] = create_arg.pitch;
 	fb->size = create_arg.size;
 	fb->width = width;
 	fb->height = height;
@@ -857,7 +859,7 @@ drm_fb_create_dumb(struct drm_backend *b, int width, int height,
 	}
 
 	memset(&map_arg, 0, sizeof map_arg);
-	map_arg.handle = fb->handle;
+	map_arg.handle = fb->handles[0];
 	ret = drmIoctl(fb->fd, DRM_IOCTL_MODE_MAP_DUMB, &map_arg);
 	if (ret)
 		goto err_add_fb;
@@ -908,10 +910,10 @@ drm_fb_get_from_bo(struct gbm_bo *bo, struct drm_backend *backend,
 
 	fb->width = gbm_bo_get_width(bo);
 	fb->height = gbm_bo_get_height(bo);
-	fb->stride = gbm_bo_get_stride(bo);
-	fb->handle = gbm_bo_get_handle(bo).u32;
+	fb->strides[0] = gbm_bo_get_stride(bo);
+	fb->handles[0] = gbm_bo_get_handle(bo).u32;
 	fb->format = pixel_format_get_info(gbm_bo_get_format(bo));
-	fb->size = fb->stride * fb->height;
+	fb->size = fb->strides[0] * fb->height;
 	fb->fd = backend->drm.fd;
 
 	if (!fb->format) {
@@ -1836,7 +1838,8 @@ drm_output_apply_state_legacy(struct drm_output_state *state)
 
 	mode = to_drm_mode(output->base.current_mode);
 	if (!scanout_plane->state_cur->fb ||
-	    scanout_plane->state_cur->fb->stride != scanout_state->fb->stride) {
+	    scanout_plane->state_cur->fb->strides[0] !=
+	    scanout_state->fb->strides[0]) {
 		ret = drmModeSetCrtc(backend->drm.fd, output->crtc_id,
 				     scanout_state->fb->fb_id,
 				     0, 0,
@@ -3762,7 +3765,7 @@ drm_output_init_pixman(struct drm_output *output, struct drm_backend *b)
 		output->image[i] =
 			pixman_image_create_bits(pixman_format, w, h,
 						 output->dumb[i]->map,
-						 output->dumb[i]->stride);
+						 output->dumb[i]->strides[0]);
 		if (!output->image[i])
 			goto err;
 	}
@@ -4991,7 +4994,7 @@ recorder_frame_notify(struct wl_listener *listener, void *data)
 		return;
 
 	ret = drmPrimeHandleToFD(b->drm.fd,
-				 output->scanout_plane->state_cur->fb->handle,
+				 output->scanout_plane->state_cur->fb->handles[0],
 				 DRM_CLOEXEC, &fd);
 	if (ret) {
 		weston_log("[libva recorder] "
@@ -5000,7 +5003,7 @@ recorder_frame_notify(struct wl_listener *listener, void *data)
 	}
 
 	ret = vaapi_recorder_frame(output->recorder, fd,
-				   output->scanout_plane->state_cur->fb->stride);
+				   output->scanout_plane->state_cur->fb->strides[0]);
 	if (ret < 0) {
 		weston_log("[libva recorder] aborted: %m\n");
 		recorder_destroy(output);
