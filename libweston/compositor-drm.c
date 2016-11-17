@@ -778,6 +778,33 @@ drm_fb_destroy_gbm(struct gbm_bo *bo, void *data)
 	drm_fb_destroy(fb);
 }
 
+static int
+drm_fb_addfb(struct drm_fb *fb)
+{
+	uint32_t handles[4] = { 0 }, pitches[4] = { 0 }, offsets[4] = { 0 };
+	int ret;
+
+	handles[0] = fb->handle;
+	pitches[0] = fb->stride;
+	offsets[0] = 0;
+
+	ret = drmModeAddFB2(fb->fd, fb->width, fb->height,
+			    fb->format->format, handles, pitches,
+			    offsets, &fb->fb_id, 0);
+	if (ret == 0)
+		return 0;
+
+	/* Legacy AddFB can't always infer the format from depth/bpp alone, so
+	 * check if our format is one of the lucky ones. */
+	if (!fb->format->depth || !fb->format->bpp)
+		return ret;
+
+	ret = drmModeAddFB(fb->fd, fb->width, fb->height,
+			   fb->format->depth, fb->format->bpp,
+			   fb->stride, fb->handle, &fb->fb_id);
+	return ret;
+}
+
 static struct drm_fb *
 drm_fb_create_dumb(struct drm_backend *b, int width, int height,
 		   uint32_t format)
@@ -788,12 +815,10 @@ drm_fb_create_dumb(struct drm_backend *b, int width, int height,
 	struct drm_mode_create_dumb create_arg;
 	struct drm_mode_destroy_dumb destroy_arg;
 	struct drm_mode_map_dumb map_arg;
-	uint32_t handles[4] = { 0 }, pitches[4] = { 0 }, offsets[4] = { 0 };
 
 	fb = zalloc(sizeof *fb);
 	if (!fb)
 		return NULL;
-
 	fb->refcnt = 1;
 
 	fb->format = pixel_format_get_info(format);
@@ -826,22 +851,10 @@ drm_fb_create_dumb(struct drm_backend *b, int width, int height,
 	fb->height = height;
 	fb->fd = b->drm.fd;
 
-	ret = -1;
-
-	handles[0] = fb->handle;
-	pitches[0] = fb->stride;
-	offsets[0] = 0;
-
-	ret = drmModeAddFB2(b->drm.fd, width, height, fb->format->format,
-			    handles, pitches, offsets, &fb->fb_id, 0);
-	if (ret) {
-		ret = drmModeAddFB(b->drm.fd, width, height,
-				   fb->format->depth, fb->format->bpp,
-				   fb->stride, fb->handle, &fb->fb_id);
-	}
-
-	if (ret)
+	if (drm_fb_addfb(fb) != 0) {
+		weston_log("failed to create kms fb: %m\n");
 		goto err_bo;
+	}
 
 	memset(&map_arg, 0, sizeof map_arg);
 	map_arg.handle = fb->handle;
@@ -879,8 +892,6 @@ drm_fb_get_from_bo(struct gbm_bo *bo, struct drm_backend *backend,
 		   bool is_opaque, enum drm_fb_type type)
 {
 	struct drm_fb *fb = gbm_bo_get_user_data(bo);
-	uint32_t handles[4] = { 0 }, pitches[4] = { 0 }, offsets[4] = { 0 };
-	int ret;
 
 	if (fb) {
 		assert(fb->type == type);
@@ -920,19 +931,7 @@ drm_fb_get_from_bo(struct gbm_bo *bo, struct drm_backend *backend,
 		goto err_free;
 	}
 
-	handles[0] = fb->handle;
-	pitches[0] = fb->stride;
-	offsets[0] = 0;
-
-	ret = drmModeAddFB2(backend->drm.fd, fb->width, fb->height,
-			    fb->format->format, handles, pitches, offsets,
-			    &fb->fb_id, 0);
-	if (ret && fb->format->depth && fb->format->bpp)
-		ret = drmModeAddFB(backend->drm.fd, fb->width, fb->height,
-				   fb->format->depth, fb->format->bpp,
-				   fb->stride, fb->handle, &fb->fb_id);
-
-	if (ret) {
+	if (drm_fb_addfb(fb) != 0) {
 		weston_log("failed to create kms fb: %m\n");
 		goto err_free;
 	}
