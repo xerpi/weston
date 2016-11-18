@@ -233,6 +233,7 @@ struct drm_mode {
 enum drm_fb_type {
 	BUFFER_INVALID = 0, /**< never used */
 	BUFFER_CLIENT, /**< directly sourced from client */
+	BUFFER_DMABUF, /**< imported from linux_dmabuf client */
 	BUFFER_PIXMAN_DUMB, /**< internal Pixman rendering */
 	BUFFER_GBM_SURFACE, /**< internal EGL rendering */
 	BUFFER_CURSOR, /**< internal cursor buffer */
@@ -889,6 +890,94 @@ drm_fb_ref(struct drm_fb *fb)
 	return fb;
 }
 
+static void
+drm_fb_destroy_dmabuf(struct drm_fb *fb)
+{
+	unsigned int i;
+
+	/* Unlike GBM buffers, where destroying the BO also closes the GEM
+	 * handle, we fully control the handle lifetime for dmabuf buffers. */
+	for (i = 0; i < ARRAY_LENGTH(fb->handles); i++) {
+		struct drm_gem_close gem_close = { .handle = fb->handles[i] };
+		if (!gem_close.handle)
+			continue;
+		(void) drmIoctl(fb->fd, DRM_IOCTL_GEM_CLOSE, &gem_close);
+	}
+
+	drm_fb_destroy(fb);
+}
+
+static struct drm_fb *
+drm_fb_get_from_dmabuf(struct linux_dmabuf_buffer *dmabuf,
+		       struct drm_backend *backend, bool is_opaque)
+{
+	struct drm_fb *fb;
+	int i, ret;
+
+        /* XXX: TODO:
+         *
+         * Currently the buffer is rejected if any dmabuf attribute
+         * flag is set.  This keeps us from passing an inverted /
+         * interlaced / bottom-first buffer (or any other type that may
+         * be added in the future) through to an overlay.  Ultimately,
+         * these types of buffers should be handled through buffer
+         * transforms and not as spot-checks requiring specific
+         * knowledge. */
+	if (dmabuf->attributes.flags)
+		return NULL;
+
+	fb = zalloc(sizeof *fb);
+	if (fb == NULL)
+		return NULL;
+
+	fb->refcnt = 1;
+	fb->type = BUFFER_DMABUF;
+
+	fb->width = dmabuf->attributes.width;
+	fb->height = dmabuf->attributes.height;
+	memcpy(fb->strides, dmabuf->attributes.stride, sizeof(fb->strides));
+	memcpy(fb->offsets, dmabuf->attributes.offset, sizeof(fb->offsets));
+	fb->format = pixel_format_get_info(dmabuf->attributes.format);
+	fb->size = 0;
+	fb->fd = backend->drm.fd;
+
+	if (!fb->format) {
+		weston_log("couldn't look up format info for 0x%lx\n",
+			   (unsigned long) fb->format);
+		goto err_free;
+	}
+
+	if (is_opaque)
+		fb->format = pixel_format_get_opaque_substitute(fb->format);
+
+	if (backend->min_width > fb->width ||
+	    fb->width > backend->max_width ||
+	    backend->min_height > fb->height ||
+	    fb->height > backend->max_height) {
+		weston_log("bo geometry out of bounds\n");
+		goto err_free;
+	}
+
+	for (i = 0; i < dmabuf->attributes.n_planes; i++) {
+		ret = drmPrimeFDToHandle(backend->drm.fd,
+					 dmabuf->attributes.fd[i],
+					 &fb->handles[i]);
+		if (ret)
+			goto err_free;
+	}
+
+	if (drm_fb_addfb(fb) != 0) {
+		weston_log("failed to create kms fb: %m\n");
+		goto err_free;
+	}
+
+	return fb;
+
+err_free:
+	drm_fb_destroy_dmabuf(fb);
+	return NULL;
+}
+
 static struct drm_fb *
 drm_fb_get_from_bo(struct gbm_bo *bo, struct drm_backend *backend,
 		   bool is_opaque, enum drm_fb_type type)
@@ -951,7 +1040,7 @@ static void
 drm_fb_set_buffer(struct drm_fb *fb, struct weston_buffer *buffer)
 {
 	assert(fb->buffer_ref.buffer == NULL);
-	assert(fb->type == BUFFER_CLIENT);
+	assert(fb->type == BUFFER_CLIENT || fb->type == BUFFER_DMABUF);
 	weston_buffer_reference(&fb->buffer_ref, buffer);
 }
 
@@ -975,6 +1064,9 @@ drm_fb_unref(struct drm_fb *fb)
 		break;
 	case BUFFER_GBM_SURFACE:
 		gbm_surface_release_buffer(fb->gbm_surface, fb->bo);
+		break;
+	case BUFFER_DMABUF:
+		drm_fb_destroy_dmabuf(fb);
 		break;
 	default:
 		assert(NULL);
@@ -1175,9 +1267,9 @@ drm_fb_get_from_view(struct drm_output_state *state, struct weston_view *ev)
 	struct drm_output *output = state->output;
 	struct drm_backend *b = to_drm_backend(output->base.compositor);
 	struct weston_buffer *buffer = ev->surface->buffer_ref.buffer;
+	bool is_opaque = drm_view_is_opaque(ev);
 	struct linux_dmabuf_buffer *dmabuf;
 	struct drm_fb *fb;
-	struct gbm_bo *bo;
 
 	/* Don't import buffers which span multiple outputs. */
 	if (ev->output_mask != (1u << output->base.id))
@@ -1192,58 +1284,27 @@ drm_fb_get_from_view(struct drm_output_state *state, struct weston_view *ev)
 	if (wl_shm_buffer_get(buffer->resource))
 		return NULL;
 
-	if (!b->gbm)
-		return NULL;
-
 	dmabuf = linux_dmabuf_buffer_get(buffer->resource);
 	if (dmabuf) {
-#ifdef HAVE_GBM_FD_IMPORT
-		/* XXX: TODO:
-		 *
-		 * Use AddFB2 directly, do not go via GBM.
-		 * Add support for multiplanar formats.
-		 * Both require refactoring in the DRM-backend to
-		 * support a mix of gbm_bos and drmfbs.
-		 */
-		 struct gbm_import_fd_data gbm_dmabuf = {
-			 .fd = dmabuf->attributes.fd[0],
-			 .width = dmabuf->attributes.width,
-			 .height = dmabuf->attributes.height,
-			 .stride = dmabuf->attributes.stride[0],
-			 .format = dmabuf->attributes.format
-		 };
-
-                /* XXX: TODO:
-                 *
-                 * Currently the buffer is rejected if any dmabuf attribute
-                 * flag is set.  This keeps us from passing an inverted /
-                 * interlaced / bottom-first buffer (or any other type that may
-                 * be added in the future) through to an overlay.  Ultimately,
-                 * these types of buffers should be handled through buffer
-                 * transforms and not as spot-checks requiring specific
-                 * knowledge. */
-		if (dmabuf->attributes.n_planes != 1 ||
-                    dmabuf->attributes.offset[0] != 0 ||
-		    dmabuf->attributes.flags)
-			goto err;
-
-		bo = gbm_bo_import(b->gbm, GBM_BO_IMPORT_FD, &gbm_dmabuf,
-				   GBM_BO_USE_SCANOUT);
-#else
-		return NULL;
-#endif
+		fb = drm_fb_get_from_dmabuf(dmabuf, b, is_opaque);
+		if (!fb)
+			return NULL;
 	} else {
+		struct gbm_bo *bo;
+
+		if (!b->gbm)
+			return NULL;
+
 		bo = gbm_bo_import(b->gbm, GBM_BO_IMPORT_WL_BUFFER,
 				   buffer->resource, GBM_BO_USE_SCANOUT);
-	}
+		if (!bo)
+			return NULL;
 
-	if (!bo)
-		return NULL;
-
-	fb = drm_fb_get_from_bo(bo, b, drm_view_is_opaque(ev), BUFFER_CLIENT);
-	if (!fb) {
-		gbm_bo_destroy(bo);
-		return NULL;
+		fb = drm_fb_get_from_bo(bo, b, is_opaque, BUFFER_CLIENT);
+		if (!fb) {
+			gbm_bo_destroy(bo);
+			return NULL;
+		}
 	}
 
 	drm_fb_set_buffer(fb, buffer);
