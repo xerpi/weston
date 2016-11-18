@@ -139,7 +139,11 @@ if get_option('backend_drm')
 		dependency('mtdev', version: '>= 1.1.0')
 	]
 	if get_option('renderer_gl')
-		deps_drm += dependency('gbm')
+		dep_gbm = dependency('gbm')
+		if dep_gbm.version().version_compare('>= 17.1')
+			config_h.set('HAVE_GBM_MODIFIERS', '1')
+		endif
+		deps_drm += dep_gbm
 	endif
 
 	if get_option('backend_drm_screencast_vaapi')
