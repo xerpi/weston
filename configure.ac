@@ -217,6 +217,9 @@ if test x$enable_drm_compositor = xyes; then
   PKG_CHECK_MODULES(DRM_COMPOSITOR_MODIFIERS, [libdrm >= 2.4.71],
 		    [AC_DEFINE([HAVE_DRM_ADDFB2_MODIFIERS], 1, [libdrm supports modifiers])],
 		    [AC_MSG_WARN([libdrm does not support AddFB2 with modifiers])])
+  PKG_CHECK_MODULES(DRM_COMPOSITOR_GBM_MODIFIERS, [gbm >= 17.1.0],
+		    [AC_DEFINE([HAVE_GBM_MODIFIERS], 1, [GBM supports modifiers])],
+		    [AC_MSG_WARN([GBM does not support modifiers])])
 fi
 
 
