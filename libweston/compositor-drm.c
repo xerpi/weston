@@ -1536,6 +1536,7 @@ drm_pending_state_get_output(struct drm_pending_state *pending_state,
 }
 
 static int drm_pending_state_apply(struct drm_pending_state *state);
+static int drm_pending_state_test(struct drm_pending_state *state);
 
 /**
  * Mark a drm_output_state (the output's last state) as complete. This handles
@@ -1644,12 +1645,15 @@ enum drm_output_propose_state_mode {
 
 static struct drm_plane_state *
 drm_output_prepare_scanout_view(struct drm_output_state *output_state,
-				struct weston_view *ev)
+				struct weston_view *ev,
+				enum drm_output_propose_state_mode mode)
 {
 	struct drm_output *output = output_state->output;
 	struct drm_plane *scanout_plane = output->scanout_plane;
 	struct drm_plane_state *state;
+	struct drm_plane_state *state_old = NULL;
 	struct drm_fb *fb;
+	int ret;
 
 	fb = drm_fb_get_from_view(output_state, ev);
 	if (!fb)
@@ -1662,7 +1666,16 @@ drm_output_prepare_scanout_view(struct drm_output_state *output_state,
 	}
 
 	state = drm_output_state_get_plane(output_state, scanout_plane);
-	if (state->fb) {
+
+	/* Check if we've already placed a buffer on this plane; if there's a
+	 * buffer there but it comes from GBM, then it's the result of
+	 * drm_output_propose_state placing it here for testing purposes. */
+	if (state->fb &&
+	    (state->fb->type == BUFFER_GBM_SURFACE ||
+	     state->fb->type == BUFFER_PIXMAN_DUMB)) {
+		state_old = calloc(1, sizeof(*state_old));
+		memcpy(state_old, state, sizeof(*state_old));
+	} else if (state->fb) {
 		drm_fb_unref(fb);
 		return NULL;
 	}
@@ -1681,10 +1694,21 @@ drm_output_prepare_scanout_view(struct drm_output_state *output_state,
 	    state->dest_h != (unsigned) output->base.current_mode->height)
 		goto err;
 
+	if (mode == DRM_OUTPUT_PROPOSE_STATE_PLANES_ONLY)
+		return state;
+
+	ret = drm_pending_state_test(output_state->pending_state);
+	if (ret != 0)
+		goto err;
+
 	return state;
 
 err:
-	drm_plane_state_put_back(state);
+	drm_plane_state_free(state, false);
+	if (state_old) {
+		wl_list_insert(&output_state->plane_list, &state_old->link);
+		state_old->output_state = output_state;
+	}
 	return NULL;
 }
 
@@ -1759,7 +1783,9 @@ drm_output_render(struct drm_output_state *state, pixman_region32_t *damage)
 	 * want to render. */
 	scanout_state = drm_output_state_get_plane(state,
 						   output->scanout_plane);
-	if (scanout_state->fb)
+	if (scanout_state->fb &&
+	    scanout_state->fb->type != BUFFER_GBM_SURFACE &&
+	    scanout_state->fb->type != BUFFER_PIXMAN_DUMB)
 		return;
 
 	if (!pixman_region32_not_empty(damage) &&
@@ -1782,6 +1808,7 @@ drm_output_render(struct drm_output_state *state, pixman_region32_t *damage)
 		return;
 	}
 
+	drm_fb_unref(scanout_state->fb);
 	scanout_state->fb = fb;
 	scanout_state->output = output;
 
@@ -2160,8 +2187,14 @@ err:
 	return -1;
 }
 
+enum drm_pending_state_mode {
+	DRM_PENDING_STATE_TEST,
+	DRM_PENDING_STATE_APPLY,
+};
+
 static int
-drm_pending_state_apply_atomic(struct drm_pending_state *pending_state)
+drm_pending_state_apply_atomic(struct drm_pending_state *pending_state,
+			       enum drm_pending_state_mode mode)
 {
 	struct drm_backend *b = pending_state->backend;
 	struct drm_output_state *output_state, *tmp;
@@ -2229,8 +2262,15 @@ drm_pending_state_apply_atomic(struct drm_pending_state *pending_state)
 		goto out;
 	}
 
-	flags |= DRM_MODE_PAGE_FLIP_EVENT | DRM_MODE_ATOMIC_NONBLOCK;
+	if (mode == DRM_PENDING_STATE_TEST)
+		flags |= DRM_MODE_ATOMIC_TEST_ONLY;
+	else
+		flags |= DRM_MODE_PAGE_FLIP_EVENT | DRM_MODE_ATOMIC_NONBLOCK;
 	ret = drmModeAtomicCommit(b->drm.fd, req, flags, b);
+
+	if (mode == DRM_PENDING_STATE_TEST)
+		return ret;
+
 	if (ret != 0) {
 		weston_log("atomic: couldn't commit new state: %m\n");
 		goto out;
@@ -2253,6 +2293,22 @@ out:
 #endif
 
 static int
+drm_pending_state_test(struct drm_pending_state *pending_state)
+{
+#ifdef HAVE_DRM_ATOMIC
+	struct drm_backend *b = pending_state->backend;
+
+	if (b->atomic_modeset)
+		return drm_pending_state_apply_atomic(pending_state,
+						      DRM_PENDING_STATE_TEST);
+#endif
+
+	/* We have no way to test state before application on the legacy
+	 * modesetting API, so just claim it succeeded. */
+	return 0;
+}
+
+static int
 drm_pending_state_apply(struct drm_pending_state *pending_state)
 {
 	struct drm_backend *b = pending_state->backend;
@@ -2261,7 +2317,8 @@ drm_pending_state_apply(struct drm_pending_state *pending_state)
 
 #ifdef HAVE_DRM_ATOMIC
 	if (b->atomic_modeset)
-		return drm_pending_state_apply_atomic(pending_state);
+		return drm_pending_state_apply_atomic(pending_state,
+						      DRM_PENDING_STATE_APPLY);
 #endif
 
 	if (b->state_invalid) {
@@ -2557,7 +2614,8 @@ atomic_flip_handler(int fd, unsigned int frame, unsigned int sec,
 
 static struct drm_plane_state *
 drm_output_prepare_overlay_view(struct drm_output_state *output_state,
-				struct weston_view *ev)
+				struct weston_view *ev,
+				enum drm_output_propose_state_mode mode)
 {
 	struct drm_output *output = output_state->output;
 	struct weston_compositor *ec = output->base.compositor;
@@ -2566,9 +2624,7 @@ drm_output_prepare_overlay_view(struct drm_output_state *output_state,
 	struct drm_plane_state *state = NULL;
 	struct drm_fb *fb;
 	unsigned int i;
-
-	if (b->sprites_are_broken)
-		return NULL;
+	int ret;
 
 	fb = drm_fb_get_from_view(output_state, ev);
 	if (!fb)
@@ -2600,29 +2656,37 @@ drm_output_prepare_overlay_view(struct drm_output_state *output_state,
 			continue;
 		}
 
-		break;
+		state->ev = ev;
+		state->output = output;
+		drm_plane_state_coords_for_view(state, ev);
+		if (state->src_w != state->dest_w << 16 ||
+		    state->src_h != state->dest_h << 16) {
+			drm_plane_state_put_back(state);
+			continue;
+		}
+
+		/* We hold one reference for the lifetime of this function;
+		 * from calling drm_fb_get_from_view, to the out label where
+		 * we unconditionally drop the reference. So, we take another
+		 * reference here to live within the state. */
+		state->fb = drm_fb_ref(fb);
+
+		/* In planes-only mode, we don't have an incremental state to
+		 * test against, so we just hope it'll work. */
+		if (mode == DRM_OUTPUT_PROPOSE_STATE_PLANES_ONLY)
+			goto out;
+
+		ret = drm_pending_state_test(output_state->pending_state);
+		if (ret == 0)
+			goto out;
+
+		drm_plane_state_put_back(state);
+		state = NULL;
 	}
 
-	/* No sprites available */
-	if (!state) {
-		drm_fb_unref(fb);
-		return NULL;
-	}
-
-	state->fb = fb;
-	state->ev = ev;
-	state->output = output;
-
-	drm_plane_state_coords_for_view(state, ev);
-	if (state->src_w != state->dest_w << 16 ||
-	    state->src_h != state->dest_h << 16)
-		goto err;
-
+out:
+	drm_fb_unref(fb);
 	return state;
-
-err:
-	drm_plane_state_put_back(state);
-	return NULL;
 }
 
 /**
@@ -2822,12 +2886,42 @@ drm_output_propose_state(struct weston_output *output_base,
 	struct weston_view *ev;
 	pixman_region32_t surface_overlap, renderer_region, occluded_region;
 	bool renderer_ok = (mode != DRM_OUTPUT_PROPOSE_STATE_PLANES_ONLY);
-	bool planes_ok = !b->sprites_are_broken;
+	bool planes_ok = false;
+	bool duplicate_renderer = false;
+	int ret;
+
+	/* We can only propose planes if we're in plane-only mode (i.e. just
+	 * get as much as possible into planes and test at the end), or mixed
+	 * mode, where we have our previous renderer buffer (and it's broadly
+	 * compatible) to test with. If we don't have these things, then we
+	 * don't know whether or not the planes will work, so we conservatively
+	 * fall back to just using the renderer. */
+	if (mode == DRM_OUTPUT_PROPOSE_STATE_PLANES_ONLY) {
+		if (b->sprites_are_broken)
+			return NULL;
+		planes_ok = true;
+	} else if (output->scanout_plane->state_cur->fb) {
+		struct drm_fb *scanout_fb =
+			output->scanout_plane->state_cur->fb;
+		if ((scanout_fb->type == BUFFER_GBM_SURFACE ||
+		     scanout_fb->type == BUFFER_PIXMAN_DUMB) &&
+		    scanout_fb->width == output_base->current_mode->width &&
+		    scanout_fb->height == output_base->current_mode->height) {
+			planes_ok = true;
+			duplicate_renderer = true;
+		}
+	}
 
 	assert(!output->state_last);
 	state = drm_output_state_duplicate(output->state_cur,
 					   pending_state,
 					   DRM_OUTPUT_STATE_CLEAR_PLANES);
+	if (!planes_ok)
+		return state;
+
+	if (duplicate_renderer)
+		drm_plane_state_duplicate(state,
+					  output->scanout_plane->state_cur);
 
 	/*
 	 * Find a surface for each sprite in the output using some heuristics:
@@ -2859,6 +2953,9 @@ drm_output_propose_state(struct weston_output *output_base,
 		/* We only assign planes to views which are exclusively present
 		 * on our output. */
 		if (ev->output_mask != (1u << output->base.id))
+			force_renderer = true;
+
+		if (!ev->surface->buffer_ref.buffer)
 			force_renderer = true;
 
 		/* Ignore views we know to be totally occluded. */
@@ -2894,17 +2991,13 @@ drm_output_propose_state(struct weston_output *output_base,
 		 * cursors_are_broken flag. */
 		if (!force_renderer && !b->cursors_are_broken)
 			ps = drm_output_prepare_cursor_view(state, ev);
-		if (!planes_ok)
-			force_renderer = true;
 		if (!force_renderer && !ps)
-			ps = drm_output_prepare_scanout_view(state, ev);
+			ps = drm_output_prepare_scanout_view(state, ev, mode);
 		if (!force_renderer && !ps)
-			ps = drm_output_prepare_overlay_view(state, ev);
+			ps = drm_output_prepare_overlay_view(state, ev, mode);
 
 		if (ps)
 			continue;
-		if (!renderer_ok)
-			goto err;
 
 		pixman_region32_union(&renderer_region,
 				      &renderer_region,
@@ -2912,6 +3005,11 @@ drm_output_propose_state(struct weston_output *output_base,
 	}
 	pixman_region32_fini(&renderer_region);
 	pixman_region32_fini(&occluded_region);
+
+	/* Check to see if this state will actually work. */
+	ret = drm_pending_state_test(state->pending_state);
+	if (ret != 0)
+		goto err;
 
 	return state;
 
@@ -2933,8 +3031,14 @@ drm_assign_planes(struct weston_output *output_base, void *repaint_data)
 	struct weston_view *ev;
 	struct weston_plane *primary = &output_base->compositor->primary_plane;
 
+
 	state = drm_output_propose_state(output_base, pending_state,
-					 DRM_OUTPUT_PROPOSE_STATE_MIXED);
+					 DRM_OUTPUT_PROPOSE_STATE_PLANES_ONLY);
+	if (!state)
+		state = drm_output_propose_state(output_base, pending_state,
+						 DRM_OUTPUT_PROPOSE_STATE_MIXED);
+
+	assert(state);
 
 	wl_list_for_each(ev, &output_base->compositor->view_list, link) {
 		struct drm_plane *target_plane = NULL;
