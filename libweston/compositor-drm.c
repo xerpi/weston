@@ -249,6 +249,7 @@ struct drm_fb {
 	uint32_t strides[4];
 	uint32_t offsets[4];
 	const struct pixel_format_info *format;
+	uint64_t modifier;
 	int width, height;
 	int fd;
 	struct weston_buffer_reference buffer_ref;
@@ -785,7 +786,28 @@ drm_fb_destroy_gbm(struct gbm_bo *bo, void *data)
 static int
 drm_fb_addfb(struct drm_fb *fb)
 {
-	int ret;
+	int ret = -EINVAL;
+#ifdef HAVE_DRM_ADDFB2_MODIFIERS
+	uint64_t mods[4] = { };
+	int i;
+#endif
+
+	/* If we have a modifier set, we must only use the WithModifiers
+	 * entrypoint; we cannot import it through legacy ioctls. */
+	if (fb->modifier) {
+		/* KMS demands that if a modifier is set, it must be the same
+		 * for all planes. */
+#ifdef HAVE_DRM_ADDFB2_MODIFIERS
+		for (i = 0; fb->handles[i]; i++)
+			mods[i] = fb->modifier;
+		ret = drmModeAddFB2WithModifiers(fb->fd, fb->width, fb->height,
+						 fb->format->format,
+						 fb->handles, fb->strides,
+						 fb->offsets, mods, &fb->fb_id,
+						 DRM_MODE_FB_MODIFIERS);
+#endif
+		return ret;
+	}
 
 	ret = drmModeAddFB2(fb->fd, fb->width, fb->height, fb->format->format,
 			    fb->handles, fb->strides, fb->offsets, &fb->fb_id,
@@ -938,6 +960,7 @@ drm_fb_get_from_dmabuf(struct linux_dmabuf_buffer *dmabuf,
 	memcpy(fb->strides, dmabuf->attributes.stride, sizeof(fb->strides));
 	memcpy(fb->offsets, dmabuf->attributes.offset, sizeof(fb->offsets));
 	fb->format = pixel_format_get_info(dmabuf->attributes.format);
+	fb->modifier = dmabuf->attributes.modifier[0];
 	fb->size = 0;
 	fb->fd = backend->drm.fd;
 
