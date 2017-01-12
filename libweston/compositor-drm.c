@@ -83,6 +83,69 @@
 #define GBM_BO_USE_CURSOR GBM_BO_USE_CURSOR_64X64
 #endif
 
+
+struct drm_format_modifier {
+       /* Bitmask of formats in get_plane format list this info applies to. The
+	* offset allows a sliding window of which 64 formats (bits).
+	*
+	* Some examples:
+	* In today's world with < 65 formats, and formats 0, and 2 are
+	* supported
+	* 0x0000000000000005
+	*		  ^-offset = 0, formats = 5
+	*
+	* If the number formats grew to 128, and formats 98-102 are
+	* supported with the modifier:
+	*
+	* 0x0000003c00000000 0000000000000000
+	*		  ^
+	*		  |__offset = 64, formats = 0x3c00000000
+	*
+	*/
+       uint64_t formats;
+       uint32_t offset;
+       uint32_t pad;
+
+       /* This modifier can be used with the format for this plane. */
+       uint64_t modifier;
+} __attribute__ ((__packed__));
+
+struct drm_format_modifier_blob {
+#define FORMAT_BLOB_CURRENT 1
+	/* Version of this blob format */
+	uint32_t version;
+
+	/* Flags */
+	uint32_t flags;
+
+	/* Number of fourcc formats supported */
+	uint32_t count_formats;
+
+	/* Where in this blob the formats exist (in bytes) */
+	uint32_t formats_offset;
+
+	/* Number of drm_format_modifiers */
+	uint32_t count_modifiers;
+
+	/* Where in this blob the modifiers exist (in bytes) */
+	uint32_t modifiers_offset;
+
+	/* u32 formats[] */
+	/* struct drm_format_modifier modifiers[] */
+} __attribute__ ((__packed__));
+
+static inline uint32_t *
+formats_ptr(struct drm_format_modifier_blob *blob)
+{
+	return (uint32_t *)(((char *)blob) + blob->formats_offset);
+}
+
+static inline struct drm_format_modifier *
+modifiers_ptr(struct drm_format_modifier_blob *blob)
+{
+	return (struct drm_format_modifier *)(((char *)blob) + blob->modifiers_offset);
+}
+
 /**
  * List of properties attached to DRM planes
  */
@@ -98,6 +161,7 @@ enum wdrm_plane_property {
 	WDRM_PLANE_CRTC_H,
 	WDRM_PLANE_FB_ID,
 	WDRM_PLANE_CRTC_ID,
+	WDRM_PLANE_IN_FORMATS,
 	WDRM_PLANE__COUNT
 };
 
@@ -357,7 +421,11 @@ struct drm_plane {
 
 	struct wl_list link;
 
-	uint32_t formats[];
+	struct {
+		uint32_t format;
+		uint32_t count_modifiers;
+		uint64_t *modifiers;
+	} formats[];
 };
 
 struct drm_output {
@@ -2648,7 +2716,19 @@ drm_output_prepare_overlay_view(struct drm_output_state *output_state,
 
 		/* Check whether the format is supported */
 		for (i = 0; i < p->count_formats; i++) {
-			if (p->formats[i] == fb->format->format)
+			unsigned int j;
+
+			if (p->formats[i].format != fb->format->format)
+				continue;
+
+			if (!fb->modifier)
+				break;
+
+			for (j = 0; j < p->formats[i].count_modifiers; j++) {
+				if (p->formats[i].modifiers[j] == fb->modifier)
+					break;
+			}
+			if (j != p->formats[i].count_modifiers)
 				break;
 		}
 		if (i == p->count_formats)
@@ -3397,6 +3477,60 @@ init_pixman(struct drm_backend *b)
 }
 
 /**
+ * Populates the formats array, and the modifiers of each format for a drm_plane.
+ */
+static bool
+populate_format_modifiers(struct drm_plane *plane, const drmModePlane *kplane,
+			  uint32_t blob_id)
+{
+	unsigned i, j;
+	drmModePropertyBlobRes *blob;
+	struct drm_format_modifier_blob *fmt_mod_blob;
+	uint32_t *blob_formats;
+	struct drm_format_modifier *blob_modifiers;
+
+	blob = drmModeGetPropertyBlob(plane->backend->drm.fd, blob_id);
+	if (!blob)
+		return false;
+
+	fmt_mod_blob = blob->data;
+	blob_formats = formats_ptr(fmt_mod_blob);
+	blob_modifiers = modifiers_ptr(fmt_mod_blob);
+
+	assert(plane->count_formats == fmt_mod_blob->count_formats);
+
+	for (i = 0; i < fmt_mod_blob->count_formats; i++) {
+		uint32_t count_modifiers = 0;
+		uint64_t *modifiers = NULL;
+
+		for (j = 0; j < fmt_mod_blob->count_modifiers; j++) {
+			struct drm_format_modifier *mod = &blob_modifiers[j];
+
+			if ((i < mod->offset) || (i > mod->offset + 64))
+				continue;
+			if (!(mod->formats & (1 << (i - mod->offset))))
+				continue;
+
+			count_modifiers++;
+			modifiers = realloc(modifiers, count_modifiers * sizeof(modifiers[0]));
+			if (!modifiers) {
+				drmModeFreePropertyBlob(blob);
+				return false;
+			}
+			modifiers[count_modifiers] = mod->modifier;
+		}
+
+		plane->formats[i].format = blob_formats[i];
+		plane->formats[i].modifiers = modifiers;
+		plane->formats[i].count_modifiers = count_modifiers;
+	}
+
+	drmModeFreePropertyBlob(blob);
+
+	return true;
+}
+
+/**
  * Create a drm_plane for a hardware plane
  *
  * Creates one drm_plane structure for a hardware plane, and initialises its
@@ -3425,7 +3559,7 @@ drm_plane_create(struct drm_backend *b, const drmModePlane *kplane,
 {
 	struct drm_plane *plane;
 	drmModeObjectProperties *props;
-	int num_formats = (kplane) ? kplane->count_formats : 1;
+	uint32_t num_formats = (kplane) ? kplane->count_formats : 1;
 
 	static struct drm_property_enum_info plane_type_enums[] = {
 		[WDRM_PLANE_TYPE_PRIMARY] = {
@@ -3454,6 +3588,7 @@ drm_plane_create(struct drm_backend *b, const drmModePlane *kplane,
 		[WDRM_PLANE_CRTC_H] = { .name = "CRTC_H", },
 		[WDRM_PLANE_FB_ID] = { .name = "FB_ID", },
 		[WDRM_PLANE_CRTC_ID] = { .name = "CRTC_ID", },
+		[WDRM_PLANE_IN_FORMATS] = { .name = "IN_FORMATS", },
 	};
 
 	/* With universal planes, everything is a DRM plane; without
@@ -3465,7 +3600,7 @@ drm_plane_create(struct drm_backend *b, const drmModePlane *kplane,
 		       (type == WDRM_PLANE_TYPE_OVERLAY || (output && format)));
 
 	plane = zalloc(sizeof(*plane) +
-		       (sizeof(uint32_t) * num_formats));
+		       (sizeof(plane->formats[0]) * num_formats));
 	if (!plane) {
 		weston_log("%s: out of memory\n", __func__);
 		return NULL;
@@ -3474,20 +3609,7 @@ drm_plane_create(struct drm_backend *b, const drmModePlane *kplane,
 	plane->backend = b;
 	plane->state_cur = drm_plane_state_alloc(NULL, plane);
 	plane->state_cur->complete = true;
-
-	if (kplane) {
-		plane->possible_crtcs = kplane->possible_crtcs;
-		plane->plane_id = kplane->plane_id;
-		plane->count_formats = kplane->count_formats;
-		memcpy(plane->formats, kplane->formats,
-		       kplane->count_formats * sizeof(kplane->formats[0]));
-	}
-	else {
-		plane->possible_crtcs = (1 << output->pipe);
-		plane->plane_id = 0;
-		plane->count_formats = 1;
-		plane->formats[0] = format;
-	}
+	plane->count_formats = num_formats;
 
 	props = drmModeObjectGetProperties(b->drm.fd, kplane->plane_id,
 					   DRM_MODE_OBJECT_PLANE);
@@ -3498,6 +3620,36 @@ drm_plane_create(struct drm_backend *b, const drmModePlane *kplane,
 	}
 	drm_property_info_update(b, plane_props, plane->props,
 				 WDRM_PLANE__COUNT, props);
+
+	if (kplane) {
+		uint32_t blob_id =
+			drm_property_get_value(&plane->props[WDRM_PLANE_IN_FORMATS],
+					       props,
+					       0);
+
+		plane->possible_crtcs = kplane->possible_crtcs;
+		plane->plane_id = kplane->plane_id;
+
+		if (blob_id) {
+			if (!populate_format_modifiers(plane, kplane, blob_id)) {
+				weston_log("%s: out of memory\n", __func__);
+				drm_property_info_free(plane->props, WDRM_PLANE__COUNT);
+				drmModeFreeObjectProperties(props);
+				free(plane);
+				return NULL;
+			}
+		} else {
+			uint32_t i;
+			for (i = 0; i < kplane->count_formats; i++)
+				plane->formats[i].format = kplane->formats[i];
+		}
+	}
+	else {
+		plane->possible_crtcs = (1 << output->pipe);
+		plane->plane_id = 0;
+		plane->formats[0].format = format;
+	}
+
 	plane->type =
 		drm_property_get_value(&plane->props[WDRM_PLANE_TYPE],
 				       props,
