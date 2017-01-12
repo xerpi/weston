@@ -2762,7 +2762,7 @@ drm_output_prepare_overlay_view(struct drm_output_state *output_state,
 			if (p->formats[i].format != fb->format->format)
 				continue;
 
-			if (fb->modifier == (1ULL << 56) - 1)
+			if (!fb->modifier)
 				break;
 
 			for (j = 0; j < p->formats[i].count_modifiers; j++) {
@@ -3539,10 +3539,6 @@ populate_format_modifiers(struct drm_plane *plane, const drmModePlane *kplane,
 	fmt_mod_blob = blob->data;
 	blob_formats = formats_ptr(fmt_mod_blob);
 	blob_modifiers = modifiers_ptr(fmt_mod_blob);
-	weston_log("%d plane formats, %d mod formats\n", plane->count_formats, fmt_mod_blob->count_formats);
-	weston_log("blob id %d, size %d\n", blob_id, blob->length);
-	weston_log("%d mods, %d flags, %d ver\n", fmt_mod_blob->count_modifiers, fmt_mod_blob->flags, fmt_mod_blob->version);
-	weston_log("%d mod offs, %d fmt offs\n", fmt_mod_blob->modifiers_offset, fmt_mod_blob->formats_offset);
 
 	assert(plane->count_formats == fmt_mod_blob->count_formats);
 
