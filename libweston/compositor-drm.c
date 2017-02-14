@@ -185,6 +185,9 @@ struct drm_backend {
 
 	void *repaint_data;
 
+	struct wl_array unused_connectors;
+	struct wl_array unused_crtcs;
+
 	int cursors_are_broken;
 
 	bool universal_planes;
@@ -3969,6 +3972,47 @@ drm_output_disable(struct weston_output *base)
 }
 
 /**
+ * Update the list of unused connectors and CRTCs
+ *
+ * This keeps the unused_connectors and unused_crtcs arrays up to date.
+ *
+ * @param b Weston backend structure
+ * @param resources DRM resources for this device
+ */
+static void
+drm_backend_update_unused_outputs(struct drm_backend *b, drmModeRes *resources)
+{
+	int i;
+
+	wl_array_release(&b->unused_connectors);
+	wl_array_init(&b->unused_connectors);
+
+	for (i = 0; i < resources->count_connectors; i++) {
+		uint32_t *connector_id;
+
+		if (drm_output_find_by_connector(b, resources->connectors[i]))
+			continue;
+
+		connector_id = wl_array_add(&b->unused_connectors,
+					    sizeof(*connector_id));
+		*connector_id = resources->connectors[i];
+	}
+
+	wl_array_release(&b->unused_crtcs);
+	wl_array_init(&b->unused_crtcs);
+
+	for (i = 0; i < resources->count_crtcs; i++) {
+		uint32_t *crtc_id;
+
+		if (drm_output_find_by_crtc(b, resources->crtcs[i]))
+			continue;
+
+		crtc_id = wl_array_add(&b->unused_crtcs, sizeof(*crtc_id));
+		*crtc_id = resources->crtcs[i];
+	}
+}
+
+/**
  * Create a Weston output structure
  *
  * Given a DRM connector, create a matching drm_output structure and add it
@@ -4100,6 +4144,8 @@ create_outputs(struct drm_backend *b, struct udev_device *drm_device)
 		drmModeFreeConnector(connector);
 	}
 
+	drm_backend_update_unused_outputs(b, resources);
+
 	if (wl_list_empty(&b->compositor->output_list) &&
 	    wl_list_empty(&b->compositor->pending_output_list))
 		weston_log("No currently active connector found.\n");
@@ -4197,6 +4243,8 @@ update_outputs(struct drm_backend *b, struct udev_device *drm_device)
 		drm_output_destroy(&output->base);
 	}
 
+	drm_backend_update_unused_outputs(b, resources);
+
 	free(connected);
 	drmModeFreeResources(resources);
 }
@@ -4258,6 +4306,9 @@ drm_destroy(struct weston_compositor *ec)
 		gbm_device_destroy(b->gbm);
 
 	weston_launcher_destroy(ec->launcher);
+
+	wl_array_release(&b->unused_crtcs);
+	wl_array_release(&b->unused_connectors);
 
 	close(b->drm.fd);
 	free(b);
@@ -4663,6 +4714,8 @@ drm_backend_create(struct weston_compositor *compositor,
 		return NULL;
 
 	b->drm.fd = -1;
+	wl_array_init(&b->unused_crtcs);
+	wl_array_init(&b->unused_connectors);
 
 	/*
 	 * KMS support for hardware planes cannot properly synchronize
