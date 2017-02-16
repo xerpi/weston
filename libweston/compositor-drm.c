@@ -185,6 +185,7 @@ struct drm_backend {
 
 	void *repaint_data;
 
+	bool state_invalid;
 	struct wl_array unused_connectors;
 	struct wl_array unused_crtcs;
 
@@ -382,6 +383,26 @@ struct drm_output {
 static struct gl_renderer_interface *gl_renderer;
 
 static const char default_seat[] = "seat0";
+
+static void
+wl_array_remove_uint32(struct wl_array *array, uint32_t elm)
+{
+	uint32_t *pos, *end;
+
+	end = (uint32_t *) ((char *) array->data + array->size);
+
+	wl_array_for_each(pos, array) {
+		if (*pos != elm)
+			continue;
+
+		array->size -= sizeof(*pos);
+		if (pos + 1 == end)
+			break;
+
+		memmove(pos, pos + 1, (char *) end -  (char *) (pos + 1));
+		break;
+	}
+}
 
 static inline struct drm_output *
 to_drm_output(struct weston_output *base)
@@ -1946,12 +1967,26 @@ drm_repaint_flush(struct weston_compositor *compositor, void *repaint_data)
 	struct drm_backend *b = to_drm_backend(compositor);
 	struct drm_pending_state *pending_state = repaint_data;
 	struct drm_output_state *output_state, *tmp;
+	uint32_t *unused;
+
+	if (b->state_invalid) {
+		/* If we need to reset all our state (e.g. because we've
+		 * just started, or just been VT-switched in), explicitly
+		 * disable all the CRTCs we aren't using. This also disables
+		 * all connectors on these CRTCs, so we don't need to do that
+		 * separately with the pre-atomic API. */
+		wl_array_for_each(unused, &b->unused_crtcs)
+			drmModeSetCrtc(b->drm.fd, *unused, 0, 0, 0, NULL, 0,
+				       NULL);
+	}
 
 	wl_list_for_each_safe(output_state, tmp, &pending_state->output_list,
 			      link) {
 		drm_output_assign_state(output_state,
 					DRM_OUTPUT_STATE_UPDATE_ASYNCHRONOUS);
 	}
+
+	b->state_invalid = false;
 
 	drm_pending_state_free(pending_state);
 	b->repaint_data = NULL;
@@ -3870,6 +3905,9 @@ drm_output_enable(struct weston_output *base)
 				    output->connector->count_modes == 0 ?
 				    ", built-in" : "");
 
+	wl_array_remove_uint32(&b->unused_crtcs, output->crtc_id);
+	wl_array_remove_uint32(&b->unused_connectors, output->connector_id);
+
 	return 0;
 
 err:
@@ -3950,6 +3988,7 @@ drm_output_disable(struct weston_output *base)
 {
 	struct drm_output *output = to_drm_output(base);
 	struct drm_backend *b = to_drm_backend(base->compositor);
+	uint32_t *unused;
 
 	if (output->page_flip_pending || output->vblank_pending) {
 		output->disable_pending = 1;
@@ -3967,6 +4006,11 @@ drm_output_disable(struct weston_output *base)
 
 	drm_output_state_free(output->state_cur);
 	output->state_cur = drm_output_state_alloc(output, NULL);
+
+	unused = wl_array_add(&b->unused_connectors, sizeof(*unused));
+	*unused = output->connector_id;
+	unused = wl_array_add(&b->unused_crtcs, sizeof(*unused));
+	*unused = output->crtc_id;
 
 	return 0;
 }
@@ -4326,6 +4370,7 @@ session_notify(struct wl_listener *listener, void *data)
 		weston_log("activating session\n");
 		weston_compositor_wake(compositor);
 		weston_compositor_damage_all(compositor);
+		b->state_invalid = true;
 		udev_input_enable(&b->input);
 	} else {
 		weston_log("deactivating session\n");
@@ -4713,6 +4758,7 @@ drm_backend_create(struct weston_compositor *compositor,
 	if (b == NULL)
 		return NULL;
 
+	b->state_invalid = true;
 	b->drm.fd = -1;
 	wl_array_init(&b->unused_crtcs);
 	wl_array_init(&b->unused_connectors);
