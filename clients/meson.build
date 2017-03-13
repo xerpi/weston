@@ -120,6 +120,10 @@ if get_option('clients_simple')
 		executable('weston-simple-egl',
 			'simple-egl.c',
 			srcs_simple,
+			gen_viewporter_client,
+			gen_viewporter_impl,
+			gen_presentation_time_client,
+			gen_presentation_time_impl,
 			include_directories:
 				include_directories('..', '../shared'),
 			dependencies: [
