@@ -868,8 +868,12 @@ drm_fb_addfb(struct drm_fb *fb)
 		/* KMS demands that if a modifier is set, it must be the same
 		 * for all planes. */
 #ifdef HAVE_DRM_ADDFB2_MODIFIERS
-		for (i = 0; fb->handles[i]; i++)
+		for (i = 0; fb->handles[i]; i++) {
+			weston_log("handle %d: %d, offset %d, stride %d\n", i, fb->handles[i], fb->offsets[i], fb->strides[i]);
 			mods[i] = fb->modifier;
+		}
+		if (fb->modifier)
+			weston_log("modifier: 0x%lx\n", fb->modifier);
 		ret = drmModeAddFB2WithModifiers(fb->fd, fb->width, fb->height,
 						 fb->format->format,
 						 fb->handles, fb->strides,
@@ -1459,6 +1463,7 @@ drm_output_state_alloc(struct drm_output *output,
 	struct drm_output_state *state = calloc(1, sizeof(*state));
 
 	assert(state);
+	weston_log("%s: allocating output state\n", output->base.name);
 	state->output = output;
 	state->dpms = WESTON_DPMS_OFF;
 	state->pending_state = pending_state;
@@ -1652,11 +1657,13 @@ drm_output_update_complete(struct drm_output *output, uint32_t flags,
 	} else if (output->dpms_off_pending) {
 		struct drm_pending_state *pending = drm_pending_state_alloc(b);
 		drm_output_get_disable_state(pending, output);
+		weston_log("%s (con %d, crtc %d): applying DPMS off\n", output->base.name, output->connector_id, output->crtc_id);
 		drm_pending_state_apply(pending);
 	}
 
 	ts.tv_sec = sec;
 	ts.tv_nsec = usec * 1000;
+	weston_log("%s: finish_frame (update_complete)\n", output->base.name);
 	weston_output_finish_frame(&output->base, &ts, flags);
 
 	/* We can't call this from frame_notify, because the output's
@@ -2014,6 +2021,7 @@ drm_output_apply_state_legacy(struct drm_output_state *state)
 		drm_output_assign_state(state,
 					DRM_OUTPUT_STATE_UPDATE_SYNCHRONOUS);
 		weston_compositor_read_presentation_clock(output->base.compositor, &now);
+		weston_log("%s: finish_frame (legacy disable, sync)\n", output->base.name);
 		weston_output_finish_frame(&output->base,
 					   &now,
 					   WP_PRESENTATION_FEEDBACK_KIND_HW_COMPLETION);
@@ -2050,6 +2058,7 @@ drm_output_apply_state_legacy(struct drm_output_state *state)
 			weston_log("set mode failed: %m\n");
 			goto err;
 		}
+		weston_log("%s: legacy SetCrtc to kickstart\n", output->base.name);
 	}
 
 	if (drmModePageFlip(backend->drm.fd, output->crtc_id,
@@ -2058,6 +2067,7 @@ drm_output_apply_state_legacy(struct drm_output_state *state)
 		weston_log("queueing pageflip failed: %m\n");
 		goto err;
 	}
+	weston_log("%s: flipped to buffer %d, %d x %d\n", output->base.name, scanout_state->fb ? scanout_state->fb->fb_id : 0, scanout_state->dest_w, scanout_state->dest_h);
 
 	assert(!output->page_flip_pending);
 
@@ -2100,6 +2110,7 @@ drm_output_apply_state_legacy(struct drm_output_state *state)
 		if (ret)
 			weston_log("setplane failed: %d: %s\n",
 				ret, strerror(errno));
+		weston_log("%s: plane %d -> buffer %d, %d x %d (+%d %d)\n", output->base.name, p->plane_id, fb_id, ps->dest_w, ps->dest_h, ps->dest_x, ps->dest_y);
 
 		vbl.request.type |= drm_waitvblank_pipe(output);
 
@@ -2120,6 +2131,7 @@ drm_output_apply_state_legacy(struct drm_output_state *state)
 						  output->connector_id,
 						  dpms_prop->prop_id,
 						  state->dpms);
+		weston_log("%s: set DPMS prop to %d\n", output->base.name, state->dpms);
 		if (ret) {
 			weston_log("DRM: DPMS: failed property set for %s\n",
 				   output->base.name);
@@ -2215,6 +2227,7 @@ drm_output_apply_state_atomic(struct drm_output_state *state,
 		*flags |= DRM_MODE_ATOMIC_ALLOW_MODESET;
 
 	if (state->dpms == WESTON_DPMS_ON) {
+		weston_log("%s (con %d, crtc %d, flags 0x%x): applying output state: alive!\n", output->base.name, output->connector_id, output->crtc_id, *flags);
 		ret = drm_mode_ensure_blob(backend, current_mode);
 		if (ret != 0)
 			goto err;
@@ -2225,6 +2238,7 @@ drm_output_apply_state_atomic(struct drm_output_state *state,
 		ret |= connector_add_prop(req, output, WDRM_CONNECTOR_CRTC_ID,
 					  output->crtc_id);
 	} else {
+		weston_log("%s (con %d, crtc %d): applying output state: DPMS OFF\n", output->base.name, output->connector_id, output->crtc_id);
 		ret |= crtc_add_prop(req, output, WDRM_CRTC_MODE_ID, 0);
 		ret |= crtc_add_prop(req, output, WDRM_CRTC_ACTIVE, 0);
 		ret |= connector_add_prop(req, output, WDRM_CONNECTOR_CRTC_ID,
@@ -2239,6 +2253,9 @@ drm_output_apply_state_atomic(struct drm_output_state *state,
 	wl_list_for_each(plane_state, &state->plane_list, link) {
 		struct drm_plane *plane = plane_state->plane;
 
+		if (plane_state->fb) {
+			weston_log("%s: plane (%d, %d) -> (%d, %d) @ (%d, %d) %s\n", output->base.name, plane_state->src_w >> 16, plane_state->src_h >> 16, plane_state->dest_w, plane_state->dest_h, plane_state->dest_x, plane_state->dest_y, (plane_state->fb->type == BUFFER_GBM_SURFACE) ? "gbm" : (plane_state->fb->type == BUFFER_CLIENT) ? "client" : "other");
+		}
 		ret |= plane_add_prop(req, plane, WDRM_PLANE_FB_ID,
 				      plane_state->fb ? plane_state->fb->fb_id : 0);
 		ret |= plane_add_prop(req, plane, WDRM_PLANE_CRTC_ID,
@@ -2302,6 +2319,7 @@ drm_pending_state_apply_atomic(struct drm_pending_state *pending_state,
 		 * disable all the CRTCs and connectors we aren't using. */
 		wl_array_for_each(unused, &b->unused_connectors) {
 			info = &b->props_conn[WDRM_CONNECTOR_CRTC_ID];
+			weston_log("disabling connector %d\n", *unused);
 			err = drmModeAtomicAddProperty(req, *unused,
 						       info->prop_id, 0);
 			if (err <= 0)
@@ -2325,6 +2343,7 @@ drm_pending_state_apply_atomic(struct drm_pending_state *pending_state,
 				continue;
 			}
 			info = &b->props_crtc[WDRM_CRTC_ACTIVE];
+			weston_log("disabling crtc %d\n", *unused);
 			active = drm_property_get_value(info, props, 0);
 			drmModeFreeObjectProperties(props);
 			if (active == 0)
@@ -2525,6 +2544,7 @@ drm_output_start_repaint_loop(struct weston_output *output_base)
 			millihz_to_nsec(output->base.current_mode->refresh);
 		if (timespec_to_nsec(&vbl2now) < refresh_nsec) {
 			drm_output_update_msc(output, vbl.reply.sequence);
+			weston_log("%s: finish frame (vblank paint-start)\n", output_base->name);
 			weston_output_finish_frame(output_base, &ts,
 						WP_PRESENTATION_FEEDBACK_INVALID);
 			return;
@@ -2552,6 +2572,7 @@ drm_output_start_repaint_loop(struct weston_output *output_base)
 
 finish_frame:
 	/* if we cannot page-flip, immediately finish frame */
+	weston_log("%s: finish frame (no-time fallback)\n", output_base->name);
 	weston_output_finish_frame(output_base, NULL,
 				   WP_PRESENTATION_FEEDBACK_INVALID);
 }
@@ -2605,6 +2626,7 @@ page_flip_handler(int fd, unsigned int frame,
 			 WP_PRESENTATION_FEEDBACK_KIND_HW_COMPLETION |
 			 WP_PRESENTATION_FEEDBACK_KIND_HW_CLOCK;
 
+	weston_log("%s: flip complete\n", output->base.name);
 	drm_output_update_msc(output, frame);
 
 	assert(!b->atomic_modeset);
@@ -2681,6 +2703,8 @@ atomic_flip_handler(int fd, unsigned int frame, unsigned int sec,
 	uint32_t flags = WP_PRESENTATION_FEEDBACK_KIND_VSYNC |
 			 WP_PRESENTATION_FEEDBACK_KIND_HW_COMPLETION |
 			 WP_PRESENTATION_FEEDBACK_KIND_HW_CLOCK;
+
+	weston_log("atomic flip handler: crtc %d\n", crtc_id);
 
 	/* During the initial modeset, we can disable CRTCs which we don't
 	 * actually handle during normal operation; this will give us events
@@ -3971,6 +3995,8 @@ drm_set_dpms(struct weston_output *output_base, enum dpms_enum level)
 	struct drm_output_state *state;
 	int ret;
 
+	weston_log("%s: set_dpms called %d\n", output_base->name, level);
+
 	/* If we're being called during the repaint loop, then this is
 	 * simple: discard any previously-generated state, and create a new
 	 * state where we disable everything. When we come to flush, this
@@ -3986,6 +4012,7 @@ drm_set_dpms(struct weston_output *output_base, enum dpms_enum level)
 		if (state)
 			drm_output_state_free(state);
 		state = drm_output_get_disable_state(pending_state, output);
+		weston_log("%s (con %d, crtc %d): replaced with disable state\n", output->base.name, output->connector_id, output->crtc_id);
 		state->dpms = level;
 		return;
 	}
@@ -4016,6 +4043,7 @@ drm_set_dpms(struct weston_output *output_base, enum dpms_enum level)
 	drm_output_state_duplicate(output->state_cur, pending_state,
 				   DRM_OUTPUT_STATE_CLEAR_PLANES);
 	ret = drm_pending_state_apply(pending_state);
+	weston_log("%s (con %d, crtc %d): applied disable state\n", output->base.name, output->connector_id, output->crtc_id);
 	if (ret != 0)
 		weston_log("drm_set_dpms: couldn't disable output?\n");
 }
@@ -4858,6 +4886,7 @@ drm_output_disable(struct weston_output *base)
 	weston_log("Disabling output %s\n", output->base.name);
 	pending_state = drm_pending_state_alloc(b);
 	drm_output_get_disable_state(pending_state, output);
+	weston_log("%s: output disable\n", base->name);
 	ret = drm_pending_state_apply(pending_state);
 	if (ret) {
 		weston_log("Couldn't disable output output %s\n",
