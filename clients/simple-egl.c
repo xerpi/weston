@@ -43,6 +43,8 @@
 #include <EGL/eglext.h>
 
 #include "xdg-shell-unstable-v6-client-protocol.h"
+#include "viewporter-client-protocol.h"
+#include "presentation-time-client-protocol.h"
 #include <sys/types.h>
 #include <unistd.h>
 #include "ivi-application-client-protocol.h"
@@ -68,6 +70,8 @@ struct display {
 	struct wl_cursor_theme *cursor_theme;
 	struct wl_cursor *default_cursor;
 	struct wl_surface *cursor_surface;
+	struct wp_viewporter *viewporter;
+	struct wp_presentation *presentation;
 	struct {
 		EGLDisplay dpy;
 		EGLContext ctx;
@@ -98,10 +102,13 @@ struct window {
 	struct zxdg_surface_v6 *xdg_surface;
 	struct zxdg_toplevel_v6 *xdg_toplevel;
 	struct ivi_surface *ivi_surface;
+	struct wp_viewport *viewport;
+	struct wp_presentation_feedback *pres_feed;
 	EGLSurface egl_surface;
 	struct wl_callback *callback;
 	int fullscreen, opaque, buffer_size, frame_sync, delay;
 	bool wait_for_configure;
+	bool on_plane;
 };
 
 static const char *vert_shader_text =
@@ -337,10 +344,22 @@ handle_toplevel_configure(void *data, struct zxdg_toplevel_v6 *toplevel,
 		window->geometry = window->window_size;
 	}
 
-	if (window->native)
+	if (window->native) {
 		wl_egl_window_resize(window->native,
-				     window->geometry.width,
-				     window->geometry.height, 0, 0);
+				     window->geometry.width + 64,
+				     window->geometry.height + 64, 0, 0);
+		/* note misleading indentation */
+		if (window->viewport) {
+		wp_viewport_set_source(window->viewport,
+				       wl_fixed_from_int(32),
+				       wl_fixed_from_int(32),
+				       wl_fixed_from_int(window->geometry.width),
+				       wl_fixed_from_int(window->geometry.height));
+		wp_viewport_set_destination(window->viewport,
+					    window->geometry.width,
+					    window->geometry.height);
+		}
+	}
 }
 
 static void
@@ -426,6 +445,19 @@ create_surface(struct window *window)
 						   display->egl.conf,
 						   window->native, NULL);
 
+	/* note misleading indentation */
+	if (display->viewporter) {
+	window->viewport = wp_viewporter_get_viewport(display->viewporter,
+						      window->surface);
+	wp_viewport_set_source(window->viewport,
+			       wl_fixed_from_int(32),
+			       wl_fixed_from_int(32),
+			       wl_fixed_from_int(window->geometry.width),
+			       wl_fixed_from_int(window->geometry.height));
+	wp_viewport_set_destination(window->viewport,
+				    window->geometry.width,
+				    window->geometry.height);
+	}
 
 	if (display->shell) {
 		create_xdg_surface(window, display);
@@ -473,15 +505,47 @@ destroy_surface(struct window *window)
 		wl_callback_destroy(window->callback);
 }
 
+static void pres_feed_sync_output(void *data,
+				  struct wp_presentation_feedback *pres_feed,
+				  struct wl_output *output)
+{
+}
+
+static void pres_feed_presented(void *data,
+				struct wp_presentation_feedback *pres_feed,
+				uint32_t tv_sec_hi, uint32_t tv_sec_lo,
+				uint32_t tv_nsec, uint32_t refresh,
+				uint32_t seq_hi, uint32_t seq_lo,
+				uint32_t flags_i)
+{
+	enum wp_presentation_feedback_kind flags = flags_i;
+	struct window *window = data;
+
+	window->on_plane = !!(flags & WP_PRESENTATION_FEEDBACK_KIND_ZERO_COPY);
+	wp_presentation_feedback_destroy(pres_feed);
+}
+
+static void pres_feed_discarded(void *data,
+				struct wp_presentation_feedback *pres_feed)
+{
+	wp_presentation_feedback_destroy(pres_feed);
+}
+
+static const struct wp_presentation_feedback_listener pres_feed_listener = {
+	pres_feed_sync_output,
+	pres_feed_presented,
+	pres_feed_discarded,
+};
+
 static void
 redraw(void *data, struct wl_callback *callback, uint32_t time)
 {
 	struct window *window = data;
 	struct display *display = window->display;
 	static const GLfloat verts[3][2] = {
-		{ -0.5, -0.5 },
-		{  0.5, -0.5 },
-		{  0,    0.5 }
+		{ -1.0, -1.0 },
+		{  1.0, -1.0 },
+		{  0,    1.0 }
 	};
 	static const GLfloat colors[3][3] = {
 		{ 1, 0, 0 },
@@ -530,12 +594,22 @@ redraw(void *data, struct wl_callback *callback, uint32_t time)
 		eglQuerySurface(display->egl.dpy, window->egl_surface,
 				EGL_BUFFER_AGE_EXT, &buffer_age);
 
+	glDisable(GL_SCISSOR_TEST);
 	glViewport(0, 0, window->geometry.width, window->geometry.height);
+	glClearColor(1.0, 0.0, 0.0, 1.0);
+	glClear(GL_COLOR_BUFFER_BIT);
+
+	glScissor(31, 31, window->geometry.width + 2, window->geometry.height + 2);
+	glEnable(GL_SCISSOR_TEST);
+	glViewport(32, 32, window->geometry.width, window->geometry.height);
 
 	glUniformMatrix4fv(window->gl.rotation_uniform, 1, GL_FALSE,
 			   (GLfloat *) rotation);
 
-	glClearColor(0.0, 0.0, 0.0, 0.5);
+	if (window->on_plane)
+		glClearColor(0.5, 0.0, 0.5, 0.5);
+	else
+		glClearColor(0.0, 0.0, 0.0, 0.5);
 	glClear(GL_COLOR_BUFFER_BIT);
 
 	glVertexAttribPointer(window->gl.pos, 2, GL_FLOAT, GL_FALSE, 0, verts);
@@ -553,12 +627,21 @@ redraw(void *data, struct wl_callback *callback, uint32_t time)
 	if (window->opaque || window->fullscreen) {
 		region = wl_compositor_create_region(window->display->compositor);
 		wl_region_add(region, 0, 0,
-			      window->geometry.width,
-			      window->geometry.height);
+			      (window->geometry.width + 64),
+			      (window->geometry.height + 64));
 		wl_surface_set_opaque_region(window->surface, region);
 		wl_region_destroy(region);
 	} else {
 		wl_surface_set_opaque_region(window->surface, NULL);
+	}
+
+	/* misleading indentation */
+	if (display->presentation) {
+	window->pres_feed = wp_presentation_feedback(display->presentation,
+						     window->surface);
+	wp_presentation_feedback_add_listener(window->pres_feed,
+					      &pres_feed_listener,
+					      window);
 	}
 
 	if (display->swap_buffers_with_damage && buffer_age > 0) {
@@ -824,6 +907,12 @@ registry_handle_global(void *data, struct wl_registry *registry,
 		d->ivi_application =
 			wl_registry_bind(registry, name,
 					 &ivi_application_interface, 1);
+	} else if (strcmp(interface, "wp_viewporter") == 0) {
+		d->viewporter = wl_registry_bind(registry, name,
+						 &wp_viewporter_interface, 1);
+	} else if (strcmp(interface, "wp_presentation") == 0) {
+		d->presentation = wl_registry_bind(registry, name,
+						   &wp_presentation_interface, 1);
 	}
 }
 
