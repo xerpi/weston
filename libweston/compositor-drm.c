@@ -1019,7 +1019,7 @@ drm_fb_get_from_dmabuf(struct linux_dmabuf_buffer *dmabuf,
          * these types of buffers should be handled through buffer
          * transforms and not as spot-checks requiring specific
          * knowledge. */
-	if (dmabuf->attributes.flags)
+	if (0 && dmabuf->attributes.flags)
 		return NULL;
 
 	fb = zalloc(sizeof *fb);
