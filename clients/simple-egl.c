@@ -81,6 +81,8 @@ struct display {
 	struct ivi_application *ivi_application;
 
 	PFNEGLSWAPBUFFERSWITHDAMAGEEXTPROC swap_buffers_with_damage;
+
+	int scale;
 };
 
 struct geometry {
@@ -346,8 +348,8 @@ handle_toplevel_configure(void *data, struct zxdg_toplevel_v6 *toplevel,
 
 	if (window->native) {
 		wl_egl_window_resize(window->native,
-				     window->geometry.width + 64,
-				     window->geometry.height + 64, 0, 0);
+				     window->geometry.width /*+ 64*/,
+				     window->geometry.height /*+ 64*/, 0, 0);
 		/* note misleading indentation */
 		if (window->viewport) {
 		wp_viewport_set_source(window->viewport,
@@ -435,6 +437,8 @@ create_surface(struct window *window)
 	EGLBoolean ret;
 
 	window->surface = wl_compositor_create_surface(display->compositor);
+	if (display->scale)
+		wl_surface_set_buffer_scale(window->surface, display->scale);
 
 	window->native =
 		wl_egl_window_create(window->surface,
@@ -561,7 +565,7 @@ redraw(void *data, struct wl_callback *callback, uint32_t time)
 	};
 	static const uint32_t speed_div = 5, benchmark_interval = 5;
 	struct wl_region *region;
-	EGLint rect[4];
+/*	EGLint rect[4];*/
 	EGLint buffer_age = 0;
 	struct timeval tv;
 
@@ -594,6 +598,7 @@ redraw(void *data, struct wl_callback *callback, uint32_t time)
 		eglQuerySurface(display->egl.dpy, window->egl_surface,
 				EGL_BUFFER_AGE_EXT, &buffer_age);
 
+#if 0
 	glDisable(GL_SCISSOR_TEST);
 	glViewport(0, 0, window->geometry.width, window->geometry.height);
 	glClearColor(1.0, 0.0, 0.0, 1.0);
@@ -602,6 +607,7 @@ redraw(void *data, struct wl_callback *callback, uint32_t time)
 	glScissor(31, 31, window->geometry.width + 2, window->geometry.height + 2);
 	glEnable(GL_SCISSOR_TEST);
 	glViewport(32, 32, window->geometry.width, window->geometry.height);
+#endif
 
 	glUniformMatrix4fv(window->gl.rotation_uniform, 1, GL_FALSE,
 			   (GLfloat *) rotation);
@@ -644,7 +650,7 @@ redraw(void *data, struct wl_callback *callback, uint32_t time)
 					      window);
 	}
 
-	if (display->swap_buffers_with_damage && buffer_age > 0) {
+	/*if (display->swap_buffers_with_damage && buffer_age > 0) {
 		rect[0] = window->geometry.width / 4 - 1;
 		rect[1] = window->geometry.height / 4 - 1;
 		rect[2] = window->geometry.width / 2 + 2;
@@ -652,7 +658,7 @@ redraw(void *data, struct wl_callback *callback, uint32_t time)
 		display->swap_buffers_with_damage(display->egl.dpy,
 						  window->egl_surface,
 						  rect, 1);
-	} else {
+	} else */{
 		eglSwapBuffers(display->egl.dpy, window->egl_surface);
 	}
 	window->frames++;
@@ -880,7 +886,7 @@ registry_handle_global(void *data, struct wl_registry *registry,
 	if (strcmp(interface, "wl_compositor") == 0) {
 		d->compositor =
 			wl_registry_bind(registry, name,
-					 &wl_compositor_interface, 1);
+					 &wl_compositor_interface, 4);
 	} else if (strcmp(interface, "zxdg_shell_v6") == 0) {
 		d->shell = wl_registry_bind(registry, name,
 					    &zxdg_shell_v6_interface, 1);
@@ -907,10 +913,10 @@ registry_handle_global(void *data, struct wl_registry *registry,
 		d->ivi_application =
 			wl_registry_bind(registry, name,
 					 &ivi_application_interface, 1);
-	} else if (strcmp(interface, "wp_viewporter") == 0) {
+	} /*else if (strcmp(interface, "wp_viewporter") == 0) {
 		d->viewporter = wl_registry_bind(registry, name,
 						 &wp_viewporter_interface, 1);
-	} else if (strcmp(interface, "wp_presentation") == 0) {
+	} */else if (strcmp(interface, "wp_presentation") == 0) {
 		d->presentation = wl_registry_bind(registry, name,
 						   &wp_presentation_interface, 1);
 	}
@@ -967,6 +973,8 @@ main(int argc, char **argv)
 	for (i = 1; i < argc; i++) {
 		if (strcmp("-d", argv[i]) == 0 && i+1 < argc)
 			window.delay = atoi(argv[++i]);
+		else if (strcmp("-s", argv[i]) == 0)
+			display.scale = atoi(argv[++i]);
 		else if (strcmp("-f", argv[i]) == 0)
 			window.fullscreen = 1;
 		else if (strcmp("-o", argv[i]) == 0)
