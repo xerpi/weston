@@ -49,5 +49,21 @@ if get_option('shell_ivi')
 	ivi_test_ini = configure_file(input: '../ivi-shell/weston.ini.in',
 		output: 'weston-ivi-test.ini',
 		install: false,
-		configuration: weston_ini_config)
+		configuration: weston_ini_config,
+	)
+
+	install_data(
+		'../data/background.png',
+		'../data/tiling.png',
+		'../data/fullscreen.png',
+		'../data/panel.png',
+		'../data/random.png',
+		'../data/sidebyside.png',
+		'../data/home.png',
+		'../data/icon_ivi_clickdot.png',
+		'../data/icon_ivi_flower.png',
+		'../data/icon_ivi_simple-egl.png',
+		'../data/icon_ivi_simple-shm.png',
+		'../data/icon_ivi_smoke.png',
+		install_dir : '@0@/weston'.format(get_option('datadir')))
 endif
