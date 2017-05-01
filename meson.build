@@ -131,3 +131,18 @@ subdir('clients')
 subdir('tests')
 
 configure_file(output: 'config.h', install: false, configuration: config_h)
+
+install_data(
+	'data/wayland.svg',
+	'data/wayland.png',
+	'data/pattern.png',
+	'data/terminal.png',
+	'data/border.png',
+	'data/icon_editor.png',
+	'data/icon_flower.png',
+	'data/icon_terminal.png',
+	'data/icon_window.png',
+	'data/sign_close.png',
+	'data/sign_maximize.png',
+	'data/sign_minimize.png',
+	install_dir : '@0@/weston'.format(get_option('datadir')))
