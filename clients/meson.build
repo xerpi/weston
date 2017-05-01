@@ -56,7 +56,7 @@ if get_option('clients_simple')
 	           srcs_simple,
 		   include_directories: include_directories('..'),
 		   dependencies: deps_simple,
-		   install: false
+		   install: true
 	)
 	executable('weston-simple-im',
 		   'simple-im.c',
@@ -68,21 +68,21 @@ if get_option('clients_simple')
 		   	deps_simple,
 			dependency('cairo'),
 		   ],
-		   install: false
+		   install: true
 	)
 	executable('weston-simple-shm',
 		   'simple-shm.c',
 	           srcs_simple,
 		   include_directories: include_directories('..'),
 		   dependencies: deps_simple,
-		   install: false
+		   install: true
 	)
 	executable('weston-simple-touch',
 		   'simple-touch.c',
 	           srcs_simple,
 		   include_directories: include_directories('..'),
 		   dependencies: deps_simple,
-		   install: false
+		   install: true
 	)
 
 	if get_option('clients_dmabuf_drm')
@@ -97,7 +97,7 @@ if get_option('clients_simple')
 				dep_libdrm,
 				dependency('libdrm_intel'),
 			   ],
-			   install: false
+			   install: true
 		)
 	endif
 
@@ -112,7 +112,7 @@ if get_option('clients_simple')
 			   	deps_simple,
 				dep_libdrm,
 			   ],
-			   install: false
+			   install: true
 		)
 	endif
 
@@ -133,7 +133,7 @@ if get_option('clients_simple')
 				dependency('glesv2'),
 				dependency('wayland-egl'),
 			],
-			install: false
+			install: true
 		)
 	endif
 endif
@@ -212,7 +212,7 @@ if get_option('clients_suite')
 			   include_directories:
 				include_directories('..', '../shared'),
 		           dependencies: t_deps,
-			   install: false
+			   install: true
 		)
 	endforeach
 endif
