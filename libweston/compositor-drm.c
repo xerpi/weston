@@ -864,7 +864,7 @@ drm_fb_addfb(struct drm_fb *fb)
 
 	/* If we have a modifier set, we must only use the WithModifiers
 	 * entrypoint; we cannot import it through legacy ioctls. */
-	if (fb->modifier) {
+	if (fb->modifier != ((1ULL<<56) - 1)) {
 		/* KMS demands that if a modifier is set, it must be the same
 		 * for all planes. */
 #ifdef HAVE_DRM_ADDFB2_MODIFIERS
@@ -872,8 +872,7 @@ drm_fb_addfb(struct drm_fb *fb)
 			weston_log("handle %d: %d, offset %d, stride %d\n", i, fb->handles[i], fb->offsets[i], fb->strides[i]);
 			mods[i] = fb->modifier;
 		}
-		if (fb->modifier)
-			weston_log("modifier: 0x%lx\n", fb->modifier);
+		weston_log("modifier: 0x%lx, invalid 0x%lx\n", fb->modifier, (uint64_t) ((1ULL<<56)-1));
 		ret = drmModeAddFB2WithModifiers(fb->fd, fb->width, fb->height,
 						 fb->format->format,
 						 fb->handles, fb->strides,
@@ -943,6 +942,7 @@ drm_fb_create_dumb(struct drm_backend *b, int width, int height,
 		goto err_fb;
 
 	fb->type = BUFFER_PIXMAN_DUMB;
+	fb->modifier = ((1ULL<<56) - 1);
 	fb->handles[0] = create_arg.handle;
 	fb->strides[0] = create_arg.pitch;
 	fb->size = create_arg.size;
@@ -1104,12 +1104,15 @@ drm_fb_get_from_bo(struct gbm_bo *bo, struct drm_backend *backend,
 
 #ifdef HAVE_GBM_MODIFIERS
 	fb->modifier = gbm_bo_get_modifier(bo);
+	weston_log("mod from GBM: 0x%lx\n", fb->modifier);
 	for (i = 0; i < gbm_bo_get_plane_count(bo); i++) {
 		fb->strides[i] = gbm_bo_get_stride_for_plane(bo, i);
 		fb->handles[i] = gbm_bo_get_handle_for_plane(bo, i).u32;
 		fb->offsets[i] = gbm_bo_get_offset(bo, i);
 	}
 #else
+	weston_log("mod from ourselves: 0x%lx\n", fb->modifier);
+	fb->modifier = ((1ULL<<56) - 1);
 	fb->strides[0] = gbm_bo_get_stride(bo);
 	fb->handles[0] = gbm_bo_get_handle(bo).u32;
 #endif
@@ -2759,7 +2762,7 @@ drm_output_prepare_overlay_view(struct drm_output_state *output_state,
 			if (p->formats[i].format != fb->format->format)
 				continue;
 
-			if (!fb->modifier)
+			if (fb->modifier == (1ULL << 56) - 1)
 				break;
 
 			for (j = 0; j < p->formats[i].count_modifiers; j++) {
