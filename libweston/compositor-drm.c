@@ -108,7 +108,7 @@ struct drm_format_modifier {
 
        /* This modifier can be used with the format for this plane. */
        uint64_t modifier;
-} __attribute__ ((__packed__));
+};
 
 struct drm_format_modifier_blob {
 #define FORMAT_BLOB_CURRENT 1
@@ -132,7 +132,7 @@ struct drm_format_modifier_blob {
 
 	/* u32 formats[] */
 	/* struct drm_format_modifier modifiers[] */
-} __attribute__ ((__packed__));
+};
 
 static inline uint32_t *
 formats_ptr(struct drm_format_modifier_blob *blob)
@@ -1350,7 +1350,7 @@ drm_plane_state_coords_for_view(struct drm_plane_state *state,
 	state->src_x = wl_fixed_from_double(sxf1) << 8;
 	state->src_y = wl_fixed_from_double(syf1) << 8;
 	state->src_w = wl_fixed_from_double(sxf2 - sxf1) << 8;
-	state->src_h = wl_fixed_from_double(syf2 - sxf1) << 8;
+	state->src_h = wl_fixed_from_double(syf2 - syf1) << 8;
 }
 
 static bool
@@ -3537,6 +3537,10 @@ populate_format_modifiers(struct drm_plane *plane, const drmModePlane *kplane,
 	fmt_mod_blob = blob->data;
 	blob_formats = formats_ptr(fmt_mod_blob);
 	blob_modifiers = modifiers_ptr(fmt_mod_blob);
+	weston_log("%d plane formats, %d mod formats\n", plane->count_formats, fmt_mod_blob->count_formats);
+	weston_log("blob id %d, size %d\n", blob_id, blob->length);
+	weston_log("%d mods, %d flags, %d ver\n", fmt_mod_blob->count_modifiers, fmt_mod_blob->flags, fmt_mod_blob->version);
+	weston_log("%d mod offs, %d fmt offs\n", fmt_mod_blob->modifiers_offset, fmt_mod_blob->formats_offset);
 
 	assert(plane->count_formats == fmt_mod_blob->count_formats);
 
@@ -3552,13 +3556,12 @@ populate_format_modifiers(struct drm_plane *plane, const drmModePlane *kplane,
 			if (!(mod->formats & (1 << (i - mod->offset))))
 				continue;
 
-			count_modifiers++;
-			modifiers = realloc(modifiers, count_modifiers * sizeof(modifiers[0]));
+			modifiers = realloc(modifiers, (count_modifiers + 1) * sizeof(modifiers[0]));
 			if (!modifiers) {
 				drmModeFreePropertyBlob(blob);
 				return false;
 			}
-			modifiers[count_modifiers] = mod->modifier;
+			modifiers[count_modifiers++] = mod->modifier;
 		}
 
 		plane->formats[i].format = blob_formats[i];
