@@ -1350,7 +1350,7 @@ drm_plane_state_coords_for_view(struct drm_plane_state *state,
 	state->src_x = wl_fixed_from_double(sxf1) << 8;
 	state->src_y = wl_fixed_from_double(syf1) << 8;
 	state->src_w = wl_fixed_from_double(sxf2 - sxf1) << 8;
-	state->src_h = wl_fixed_from_double(syf2 - sxf1) << 8;
+	state->src_h = wl_fixed_from_double(syf2 - syf1) << 8;
 }
 
 static bool
