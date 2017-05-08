@@ -3089,6 +3089,8 @@ drm_output_propose_state(struct weston_output *output_base,
 		pixman_region32_subtract(&surface_overlap,
 					 &ev->transform.boundingbox,
 					 &occluded_region);
+		pixman_region32_intersect(&surface_overlap, &surface_overlap,
+					  &output->base.region);
 		occluded = !pixman_region32_not_empty(&surface_overlap);
 		pixman_region32_fini(&surface_overlap);
 		if (occluded)
