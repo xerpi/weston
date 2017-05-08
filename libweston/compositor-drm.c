@@ -3067,6 +3067,7 @@ drm_output_propose_state(struct weston_output *output_base,
 	pixman_region32_init(&occluded_region);
 
 	wl_list_for_each(ev, &output_base->compositor->view_list, link) {
+		pixman_region32_t clipped_view;
 		struct drm_plane_state *ps = NULL;
 		bool force_renderer = false;
 		bool occluded = false;
@@ -3084,35 +3085,46 @@ drm_output_propose_state(struct weston_output *output_base,
 		if (!ev->surface->buffer_ref.buffer)
 			force_renderer = true;
 
+		/* Clip the view's bbox to the output just in
+		 * case the view spans outside of it */
+		pixman_region32_init(&clipped_view);
+		pixman_region32_intersect(&clipped_view,
+					  &ev->transform.boundingbox,
+					  &output->base.region);
+
 		/* Ignore views we know to be totally occluded. */
 		pixman_region32_init(&surface_overlap);
 		pixman_region32_subtract(&surface_overlap,
-					 &ev->transform.boundingbox,
+					 &clipped_view,
 					 &occluded_region);
 		pixman_region32_intersect(&surface_overlap, &surface_overlap,
 					  &output->base.region);
 		occluded = !pixman_region32_not_empty(&surface_overlap);
 		pixman_region32_fini(&surface_overlap);
-		if (occluded)
+		if (occluded) {
+			pixman_region32_fini(&clipped_view);
 			continue;
+		}
 
 		/* Since we process views from top to bottom, we know that if
 		 * the view intersects the calculated renderer region, it must
 		 * be part of, or occluded by, it, and cannot go on a plane. */
 		pixman_region32_init(&surface_overlap);
 		pixman_region32_intersect(&surface_overlap, &renderer_region,
-					  &ev->transform.boundingbox);
+					  &clipped_view);
 		if (pixman_region32_not_empty(&surface_overlap))
 			force_renderer = true;
 		pixman_region32_fini(&surface_overlap);
 
-		if (force_renderer && !renderer_ok)
+		if (force_renderer && !renderer_ok) {
+			pixman_region32_fini(&clipped_view);
 			goto err;
+		}
 
 		if (drm_view_is_opaque(ev))
 			pixman_region32_union(&occluded_region,
 					      &occluded_region,
-					      &ev->transform.boundingbox);
+					      &clipped_view);
 
 		/* The cursor plane is 'special' in the sense that we can still
 		 * place it in the legacy API, and we gate that with a separate
@@ -3124,12 +3136,16 @@ drm_output_propose_state(struct weston_output *output_base,
 		if (!force_renderer && !ps)
 			ps = drm_output_prepare_overlay_view(state, ev, mode);
 
-		if (ps)
+		if (ps) {
+			pixman_region32_fini(&clipped_view);
 			continue;
+		}
 
 		pixman_region32_union(&renderer_region,
 				      &renderer_region,
-				      &ev->transform.boundingbox);
+				      &clipped_view);
+
+		pixman_region32_fini(&clipped_view);
 	}
 	pixman_region32_fini(&renderer_region);
 	pixman_region32_fini(&occluded_region);
