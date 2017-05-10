@@ -135,6 +135,28 @@ if get_option('clients_simple')
 			],
 			install: true
 		)
+
+		# XXX: wayland-protocols version 1.8?
+		if dep_wp.version().version_compare('>= 1.8')
+			executable('weston-simple-egl-explicit-synchronization',
+				'simple-egl-explicit-synchronization.c',
+				srcs_simple,
+				gen_presentation_time_client,
+				gen_presentation_time_impl,
+				gen_explicit_sync_client,
+				gen_explicit_sync_impl,
+				include_directories:
+					include_directories('..', '../shared'),
+				dependencies: [
+					deps_simple,
+					dep_libm,
+					dependency('egl'),
+					dependency('glesv2'),
+					dependency('wayland-egl'),
+				],
+				install: true
+			)
+		endif
 	endif
 endif
 
