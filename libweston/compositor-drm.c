@@ -162,6 +162,7 @@ enum wdrm_plane_property {
 	WDRM_PLANE_FB_ID,
 	WDRM_PLANE_CRTC_ID,
 	WDRM_PLANE_IN_FORMATS,
+	WDRM_PLANE_IN_FENCE_FD,
 	WDRM_PLANE__COUNT
 };
 
@@ -324,6 +325,9 @@ struct drm_fb {
 
 	/* Used by dumb fbs */
 	void *map;
+
+	/* Out fence from GPU, in fence to KMS. */
+	int fence_fd;
 };
 
 struct drm_edid {
@@ -822,6 +826,8 @@ drm_fb_destroy(struct drm_fb *fb)
 {
 	if (fb->fb_id != 0)
 		drmModeRmFB(fb->fd, fb->fb_id);
+	if (fb->fence_fd != -1)
+		close(fb->fence_fd);
 	weston_buffer_reference(&fb->buffer_ref, NULL);
 	free(fb);
 }
@@ -949,6 +955,7 @@ drm_fb_create_dumb(struct drm_backend *b, int width, int height,
 	fb->width = width;
 	fb->height = height;
 	fb->fd = b->drm.fd;
+	fb->fence_fd = -1;
 
 	if (drm_fb_addfb(fb) != 0) {
 		weston_log("failed to create kms fb: %m\n");
@@ -1037,6 +1044,7 @@ drm_fb_get_from_dmabuf(struct linux_dmabuf_buffer *dmabuf,
 	fb->modifier = dmabuf->attributes.modifier[0];
 	fb->size = 0;
 	fb->fd = backend->drm.fd;
+	fb->fence_fd = -1;
 
 	if (!fb->format) {
 		weston_log("couldn't look up format info for 0x%lx\n",
@@ -1118,6 +1126,7 @@ drm_fb_get_from_bo(struct gbm_bo *bo, struct drm_backend *backend,
 #endif
 
 	fb->fd = backend->drm.fd;
+	fb->fence_fd = -1;
 
 	if (!fb->format) {
 		weston_log("couldn't look up format 0x%lx\n",
@@ -1715,6 +1724,15 @@ drm_output_assign_state(struct drm_output_state *state,
 	wl_list_for_each(plane_state, &state->plane_list, link) {
 		struct drm_plane *plane = plane_state->plane;
 
+		/*
+		 * The kernel has now ownership of the fence fd,
+		 * so it's a good time to drop our reference.
+		 */
+		if (plane_state->fb && plane_state->fb->fence_fd != -1) {
+			close(plane_state->fb->fence_fd);
+			plane_state->fb->fence_fd = -1;
+		}
+
 		if (plane->state_cur && !plane->state_cur->output_state)
 			drm_plane_state_free(plane->state_cur, true);
 		plane->state_cur = plane_state;
@@ -1815,9 +1833,10 @@ drm_output_render_gl(struct drm_output_state *state, pixman_region32_t *damage)
 	struct drm_backend *b = to_drm_backend(output->base.compositor);
 	struct gbm_bo *bo;
 	struct drm_fb *ret;
+	int fence = -1;
 
 	output->base.compositor->renderer->repaint_output(&output->base,
-							  damage);
+							  damage, &fence);
 
 	bo = gbm_surface_lock_front_buffer(output->gbm_surface);
 	if (!bo) {
@@ -1832,6 +1851,7 @@ drm_output_render_gl(struct drm_output_state *state, pixman_region32_t *damage)
 		return NULL;
 	}
 	ret->gbm_surface = output->gbm_surface;
+	ret->fence_fd = fence;
 
 	return ret;
 }
@@ -1857,7 +1877,7 @@ drm_output_render_pixman(struct drm_output_state *state,
 	pixman_renderer_output_set_buffer(&output->base,
 					  output->image[output->current_image]);
 
-	ec->renderer->repaint_output(&output->base, &total_damage);
+	ec->renderer->repaint_output(&output->base, &total_damage, NULL);
 
 	pixman_region32_fini(&total_damage);
 	pixman_region32_fini(&previous_damage);
@@ -2279,6 +2299,10 @@ drm_output_apply_state_atomic(struct drm_output_state *state,
 				      plane_state->dest_w);
 		ret |= plane_add_prop(req, plane, WDRM_PLANE_CRTC_H,
 				      plane_state->dest_h);
+
+		if (plane_state->fb && plane_state->fb->fence_fd != -1)
+			ret |= plane_add_prop(req, plane, WDRM_PLANE_IN_FENCE_FD,
+					      plane_state->fb->fence_fd);
 
 		if (ret != 0) {
 			weston_log("couldn't set plane state\n");
@@ -3646,6 +3670,7 @@ drm_plane_create(struct drm_backend *b, const drmModePlane *kplane,
 		[WDRM_PLANE_FB_ID] = { .name = "FB_ID", },
 		[WDRM_PLANE_CRTC_ID] = { .name = "CRTC_ID", },
 		[WDRM_PLANE_IN_FORMATS] = { .name = "IN_FORMATS", },
+		[WDRM_PLANE_IN_FENCE_FD] = { .name = "IN_FENCE_FD", },
 	};
 
 	/* With universal planes, everything is a DRM plane; without

@@ -214,6 +214,15 @@ struct gl_renderer {
 
 	int has_gl_texture_rg;
 
+	int has_egl_fence_sync;
+	PFNEGLCREATESYNCKHRPROC create_sync;
+	PFNEGLDESTROYSYNCKHRPROC destroy_sync;
+	PFNEGLCLIENTWAITSYNCKHRPROC client_wait_sync;
+	PFNEGLGETSYNCATTRIBKHRPROC get_sync_attrib;
+
+	int has_egl_android_native_fence_sync;
+	PFNEGLDUPNATIVEFENCEFDANDROIDPROC dup_native_fence_fd_android;
+
 	struct gl_shader texture_shader_rgba;
 	struct gl_shader texture_shader_rgbx;
 	struct gl_shader texture_shader_egl_external;
@@ -1074,6 +1083,18 @@ output_rotate_damage(struct weston_output *output,
 	go->border_damage[go->buffer_damage_index] = border_status;
 }
 
+static EGLSyncKHR *
+create_sync(struct gl_renderer *gr, int fd)
+{
+	EGLint attrib_list[] = {
+		EGL_SYNC_NATIVE_FENCE_FD_ANDROID, fd,
+		EGL_NONE,
+	};
+
+	return gr->create_sync(gr->egl_display, EGL_SYNC_NATIVE_FENCE_ANDROID,
+			       attrib_list);
+}
+
 /* NOTE: We now allow falling back to ARGB gl visuals when XRGB is
  * unavailable, so we're assuming the background has no transparency
  * and that everything with a blend, like drop shadows, will have something
@@ -1084,7 +1105,7 @@ output_rotate_damage(struct weston_output *output,
  */
 static void
 gl_renderer_repaint_output(struct weston_output *output,
-			      pixman_region32_t *output_damage)
+			   pixman_region32_t *output_damage, int *fence)
 {
 	struct gl_output_state *go = get_output_state(output);
 	struct weston_compositor *compositor = output->compositor;
@@ -1096,6 +1117,7 @@ gl_renderer_repaint_output(struct weston_output *output,
 	pixman_box32_t *rects;
 	pixman_region32_t buffer_damage, total_damage;
 	enum gl_border_status border_damage = BORDER_STATUS_CLEAN;
+	EGLSyncKHR *gpu_fence = EGL_NO_SYNC_KHR;
 
 	if (use_output(output) < 0)
 		return;
@@ -1148,6 +1170,12 @@ gl_renderer_repaint_output(struct weston_output *output,
 	pixman_region32_copy(&output->previous_damage, output_damage);
 	wl_signal_emit(&output->frame_signal, output);
 
+	/*
+	 * Create an out fence and insert it into the GPU cmdstream.
+	 * This fence will be signaled when the GPU finishes rendering.
+	 */
+	gpu_fence = create_sync(gr, EGL_NO_NATIVE_FENCE_FD_ANDROID);
+
 	if (gr->swap_buffers_with_damage) {
 		pixman_region32_init(&buffer_damage);
 		weston_transformed_region(output->width, output->height,
@@ -1190,6 +1218,16 @@ gl_renderer_repaint_output(struct weston_output *output,
 		errored = 1;
 		weston_log("Failed in eglSwapBuffers.\n");
 		gl_renderer_print_egl_error_state();
+	}
+
+	/*
+	 * After eglSwapBuffers, we can retrieve the native fd from the fence.
+	 */
+	if (gpu_fence != EGL_NO_SYNC_KHR) {
+		if (fence)
+			*fence = gr->dup_native_fence_fd_android(gr->egl_display,
+								 gpu_fence);
+		gr->destroy_sync(gr->egl_display, gpu_fence);
 	}
 
 	go->border_status = BORDER_STATUS_CLEAN;
@@ -2911,6 +2949,13 @@ gl_renderer_setup_egl_extensions(struct weston_compositor *ec)
 	if (weston_check_egl_extension(extensions, "GL_EXT_texture_rg"))
 		gr->has_gl_texture_rg = 1;
 
+	if (weston_check_egl_extension(extensions, "EGL_KHR_fence_sync"))
+		gr->has_egl_fence_sync = 1;
+
+	if (gr->has_egl_fence_sync &&
+	    weston_check_egl_extension(extensions, "EGL_ANDROID_native_fence_sync"))
+		gr->has_egl_android_native_fence_sync = 1;
+
 	renderer_setup_egl_client_extensions(gr);
 
 	return 0;
@@ -3158,6 +3203,23 @@ gl_renderer_display_create(struct weston_compositor *ec, EGLenum platform,
 
 		if (gl_renderer_create_pbuffer_surface(gr) < 0)
 			goto fail_with_error;
+	}
+
+	if (gr->has_egl_fence_sync && gr->has_egl_android_native_fence_sync) {
+		gr->create_sync = (void *) eglGetProcAddress(
+				"eglCreateSyncKHR");
+
+		gr->destroy_sync = (void *) eglGetProcAddress(
+				"eglDestroySyncKHR");
+
+		gr->client_wait_sync = (void *) eglGetProcAddress(
+				"eglClientWaitSyncKHR");
+
+		gr->get_sync_attrib = (void *) eglGetProcAddress(
+				"eglGetSyncAttribKHR");
+
+		gr->dup_native_fence_fd_android = (void *) eglGetProcAddress(
+				"eglDupNativeFenceFDANDROID");
 	}
 
 	wl_display_add_shm_format(ec->wl_display, WL_SHM_FORMAT_RGB565);

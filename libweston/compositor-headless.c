@@ -98,7 +98,7 @@ headless_output_repaint(struct weston_output *output_base,
 	struct headless_output *output = to_headless_output(output_base);
 	struct weston_compositor *ec = output->base.compositor;
 
-	ec->renderer->repaint_output(&output->base, damage);
+	ec->renderer->repaint_output(&output->base, damage, NULL);
 
 	pixman_region32_subtract(&ec->primary_plane.damage,
 				 &ec->primary_plane.damage, damage);

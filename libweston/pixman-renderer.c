@@ -555,7 +555,7 @@ copy_to_hw_buffer(struct weston_output *output, pixman_region32_t *region)
 
 static void
 pixman_renderer_repaint_output(struct weston_output *output,
-			     pixman_region32_t *output_damage)
+			     pixman_region32_t *output_damage, int *fence)
 {
 	struct pixman_output_state *po = get_output_state(output);
 

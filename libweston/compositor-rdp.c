@@ -363,7 +363,7 @@ rdp_output_repaint(struct weston_output *output_base, pixman_region32_t *damage,
 	struct rdp_peers_item *outputPeer;
 
 	pixman_renderer_output_set_buffer(output_base, output->shadow_surface);
-	ec->renderer->repaint_output(&output->base, damage);
+	ec->renderer->repaint_output(&output->base, damage, NULL);
 
 	if (pixman_region32_not_empty(damage)) {
 		wl_list_for_each(outputPeer, &output->peers, link) {

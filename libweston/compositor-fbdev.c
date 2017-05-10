@@ -126,7 +126,7 @@ fbdev_output_repaint(struct weston_output *base, pixman_region32_t *damage,
 
 	/* Repaint the damaged region onto the back buffer. */
 	pixman_renderer_output_set_buffer(base, output->hw_surface);
-	ec->renderer->repaint_output(base, damage);
+	ec->renderer->repaint_output(base, damage, NULL);
 
 	/* Update the damage region. */
 	pixman_region32_subtract(&ec->primary_plane.damage,
