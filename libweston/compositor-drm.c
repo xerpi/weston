@@ -4829,7 +4829,11 @@ drm_output_deinit(struct weston_output *base)
 	struct drm_output *output = to_drm_output(base);
 	struct drm_backend *b = to_drm_backend(base->compositor);
 
-	drm_plane_state_free(output->scanout_plane->state_cur, true);
+	/*
+	 * Avoid double-freeing the scanout plane:
+	 *
+	 * drm_plane_state_free(output->scanout_plane->state_cur, true);
+	 */
 	output->scanout_plane->state_cur = NULL;
 
 	if (b->use_pixman)
