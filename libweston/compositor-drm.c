@@ -62,6 +62,8 @@
 #include "presentation-time-server-protocol.h"
 #include "linux-dmabuf.h"
 #include "linux-dmabuf-unstable-v1-server-protocol.h"
+#include "linux-explicit-synchronization.h"
+#include "linux-explicit-synchronization-unstable-v1-server-protocol.h"
 
 #ifndef DRM_CAP_TIMESTAMP_MONOTONIC
 #define DRM_CAP_TIMESTAMP_MONOTONIC 0x6
@@ -2300,9 +2302,13 @@ drm_output_apply_state_atomic(struct drm_output_state *state,
 		ret |= plane_add_prop(req, plane, WDRM_PLANE_CRTC_H,
 				      plane_state->dest_h);
 
-		if (plane_state->fb && plane_state->fb->fence_fd != -1)
+		if (plane_state->fb && plane_state->fb->fence_fd != -1) {
+			weston_log("using in fence: %d for plane: %p\n",
+				   plane_state->fb->fence_fd, plane);
+
 			ret |= plane_add_prop(req, plane, WDRM_PLANE_IN_FENCE_FD,
 					      plane_state->fb->fence_fd);
+		}
 
 		if (ret != 0) {
 			weston_log("couldn't set plane state\n");
@@ -2820,6 +2826,9 @@ drm_output_prepare_overlay_view(struct drm_output_state *output_state,
 		 * we unconditionally drop the reference. So, we take another
 		 * reference here to live within the state. */
 		state->fb = drm_fb_ref(fb);
+
+		/* Get the fence from the view's surface */
+		state->fb->fence_fd = ev->surface->acquire_fence;
 
 		/* In planes-only mode, we don't have an incremental state to
 		 * test against, so we just hope it'll work. */
@@ -5839,6 +5848,10 @@ drm_backend_create(struct weston_compositor *compositor,
 			weston_log("Error: initializing dmabuf "
 				   "support failed.\n");
 	}
+
+	if (linux_explicit_synchronization_setup(b->compositor) < 0)
+		weston_log("Error: initializing explicit synchronization "
+			   "support failed.\n");
 
 	compositor->backend = &b->base;
 

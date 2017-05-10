@@ -409,6 +409,8 @@ weston_surface_state_init(struct weston_surface_state *state)
 	state->buffer_viewport.buffer.src_width = wl_fixed_from_int(-1);
 	state->buffer_viewport.surface.width = -1;
 	state->buffer_viewport.changed = 0;
+
+	state->acquire_fence = -1;
 }
 
 static void
@@ -466,6 +468,8 @@ weston_surface_create(struct weston_compositor *compositor)
 	surface->buffer_viewport.buffer.scale = 1;
 	surface->buffer_viewport.buffer.src_width = wl_fixed_from_int(-1);
 	surface->buffer_viewport.surface.width = -1;
+
+	surface->acquire_fence = -1;
 
 	weston_surface_state_init(&surface->pending);
 
@@ -3110,6 +3114,10 @@ weston_surface_commit_state(struct weston_surface *surface,
 	wl_list_insert_list(&surface->feedback_list,
 			    &state->feedback_list);
 	wl_list_init(&state->feedback_list);
+
+	/* zcr_synchronization_v1.set_acquire_fence */
+	surface->acquire_fence = state->acquire_fence;
+	state->acquire_fence = -1;
 
 	wl_signal_emit(&surface->commit_signal, surface);
 }

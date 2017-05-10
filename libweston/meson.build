@@ -20,6 +20,7 @@ srcs_libweston = [
 	'noop-renderer.c',
 	'pixman-renderer.c',
 	'linux-dmabuf.c',
+	'linux-explicit-synchronization.c',
 	'pixel-formats.c',
 	'screenshooter.c',
 	'../shared/file-util.c',
@@ -43,6 +44,8 @@ srcs_libweston = [
 	gen_ptr_constraints_impl,
 	gen_shooter_server,
 	gen_shooter_impl,
+	gen_explicit_sync_server,
+	gen_explicit_sync_impl,
 ]
 
 install_headers(
@@ -128,6 +131,8 @@ if get_option('backend_drm')
 		gen_dmabuf_server,
 		gen_dmabuf_impl,
 		gen_presentation_time_server,
+		gen_explicit_sync_server,
+		gen_explicit_sync_impl,
 	]
 
 	deps_drm = [

@@ -1136,6 +1136,9 @@ struct weston_surface_state {
 	/* wp_viewport.set_source */
 	/* wp_viewport.set_destination */
 	struct weston_buffer_viewport buffer_viewport;
+
+	/* zcr_synchronization_v1.set_acquire_fence */
+	int acquire_fence;
 };
 
 struct weston_surface_activation_data {
@@ -1259,6 +1262,9 @@ struct weston_surface {
 
 	/* An list of per seat pointer constraints. */
 	struct wl_list pointer_constraints;
+
+	/* Out fence from GPU, in fence to KMS. */
+	int acquire_fence;
 };
 
 struct weston_subsurface {
