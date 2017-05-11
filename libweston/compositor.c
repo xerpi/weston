@@ -5167,6 +5167,12 @@ synchronization_set_acquire_fence(struct wl_client *client,
 	}
 #endif
 
+	/*
+	 * XXX: Should sending more than one fence before a commit be allowed?
+	 */
+	if (surface->pending.acquire_fence != -1)
+		close(surface->pending.acquire_fence);
+
 	surface->pending.acquire_fence = fd;
 }
 
