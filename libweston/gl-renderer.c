@@ -37,6 +37,7 @@
 #include <ctype.h>
 #include <float.h>
 #include <assert.h>
+#include <unistd.h>
 #include <linux/input.h>
 #include <drm_fourcc.h>
 
@@ -219,6 +220,9 @@ struct gl_renderer {
 	PFNEGLDESTROYSYNCKHRPROC destroy_sync;
 	PFNEGLCLIENTWAITSYNCKHRPROC client_wait_sync;
 	PFNEGLGETSYNCATTRIBKHRPROC get_sync_attrib;
+
+	int has_egl_wait_sync;
+	PFNEGLWAITSYNCKHRPROC wait_sync;
 
 	int has_egl_android_native_fence_sync;
 	PFNEGLDUPNATIVEFENCEFDANDROIDPROC dup_native_fence_fd_android;
@@ -631,6 +635,18 @@ triangle_fan_debug(struct weston_view *view, int first, int count)
 	free(buffer);
 }
 
+static EGLSyncKHR *
+create_sync(struct gl_renderer *gr, int fd)
+{
+	EGLint attrib_list[] = {
+		EGL_SYNC_NATIVE_FENCE_FD_ANDROID, fd,
+		EGL_NONE,
+	};
+
+	return gr->create_sync(gr->egl_display, EGL_SYNC_NATIVE_FENCE_ANDROID,
+			       attrib_list);
+}
+
 static void
 repaint_region(struct weston_view *ev, pixman_region32_t *region,
 		pixman_region32_t *surf_region)
@@ -661,6 +677,20 @@ repaint_region(struct weston_view *ev, pixman_region32_t *region,
 	/* texcoord: */
 	glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof *v, &v[2]);
 	glEnableVertexAttribArray(1);
+
+	if (ev->surface->acquire_fence != -1) {
+		EGLSyncKHR sync = create_sync(gr, ev->surface->acquire_fence);
+
+		if (sync == EGL_NO_SYNC_KHR) {
+			close(ev->surface->acquire_fence);
+		} else {
+			gr->wait_sync(gr->egl_display, sync, 0);
+			gr->destroy_sync(gr->egl_display, sync);
+			/* driver now has ownership of the fence fd */
+		}
+
+		ev->surface->acquire_fence = -1;
+	}
 
 	for (i = 0, first = 0; i < nfans; i++) {
 		glDrawArrays(GL_TRIANGLE_FAN, first, vtxcnt[i]);
@@ -1081,18 +1111,6 @@ output_rotate_damage(struct weston_output *output,
 
 	pixman_region32_copy(&go->buffer_damage[go->buffer_damage_index], output_damage);
 	go->border_damage[go->buffer_damage_index] = border_status;
-}
-
-static EGLSyncKHR *
-create_sync(struct gl_renderer *gr, int fd)
-{
-	EGLint attrib_list[] = {
-		EGL_SYNC_NATIVE_FENCE_FD_ANDROID, fd,
-		EGL_NONE,
-	};
-
-	return gr->create_sync(gr->egl_display, EGL_SYNC_NATIVE_FENCE_ANDROID,
-			       attrib_list);
 }
 
 /* NOTE: We now allow falling back to ARGB gl visuals when XRGB is
@@ -2952,7 +2970,11 @@ gl_renderer_setup_egl_extensions(struct weston_compositor *ec)
 	if (weston_check_egl_extension(extensions, "EGL_KHR_fence_sync"))
 		gr->has_egl_fence_sync = 1;
 
+	if (weston_check_egl_extension(extensions, "EGL_KHR_wait_sync"))
+		gr->has_egl_wait_sync = 1;
+
 	if (gr->has_egl_fence_sync &&
+	    gr->has_egl_wait_sync &&
 	    weston_check_egl_extension(extensions, "EGL_ANDROID_native_fence_sync"))
 		gr->has_egl_android_native_fence_sync = 1;
 
@@ -3205,7 +3227,9 @@ gl_renderer_display_create(struct weston_compositor *ec, EGLenum platform,
 			goto fail_with_error;
 	}
 
-	if (gr->has_egl_fence_sync && gr->has_egl_android_native_fence_sync) {
+	if (gr->has_egl_fence_sync &&
+	    gr->has_egl_wait_sync &&
+	    gr->has_egl_android_native_fence_sync) {
 		gr->create_sync = (void *) eglGetProcAddress(
 				"eglCreateSyncKHR");
 
@@ -3217,6 +3241,9 @@ gl_renderer_display_create(struct weston_compositor *ec, EGLenum platform,
 
 		gr->get_sync_attrib = (void *) eglGetProcAddress(
 				"eglGetSyncAttribKHR");
+
+		gr->wait_sync = (void *) eglGetProcAddress(
+				"eglWaitSyncKHR");
 
 		gr->dup_native_fence_fd_android = (void *) eglGetProcAddress(
 				"eglDupNativeFenceFDANDROID");
