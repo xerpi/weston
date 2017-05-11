@@ -3116,6 +3116,9 @@ weston_surface_commit_state(struct weston_surface *surface,
 	wl_list_init(&state->feedback_list);
 
 	/* zcr_synchronization_v1.set_acquire_fence */
+	if (surface->acquire_fence != -1)
+		close(surface->acquire_fence);
+
 	surface->acquire_fence = state->acquire_fence;
 	state->acquire_fence = -1;
 

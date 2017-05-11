@@ -66,7 +66,6 @@ synchronization_set_acquire_fence(struct wl_client *client,
 	 * TODO: Check for fd to be a valid fence fd somehow.
 	 */
 	wsurface->pending.acquire_fence = fd;
-	weston_log("got fence: %d\n", fd);
 }
 
 static const struct zcr_synchronization_v1_interface

@@ -327,9 +327,6 @@ struct drm_fb {
 
 	/* Used by dumb fbs */
 	void *map;
-
-	/* Out fence from GPU, in fence to KMS. */
-	int fence_fd;
 };
 
 struct drm_edid {
@@ -388,6 +385,7 @@ struct drm_plane_state {
 	uint32_t src_w, src_h;
 	int32_t dest_x, dest_y;
 	uint32_t dest_w, dest_h;
+	int in_fence_fd;
 
 	bool complete;
 
@@ -828,8 +826,6 @@ drm_fb_destroy(struct drm_fb *fb)
 {
 	if (fb->fb_id != 0)
 		drmModeRmFB(fb->fd, fb->fb_id);
-	if (fb->fence_fd != -1)
-		close(fb->fence_fd);
 	weston_buffer_reference(&fb->buffer_ref, NULL);
 	free(fb);
 }
@@ -957,7 +953,6 @@ drm_fb_create_dumb(struct drm_backend *b, int width, int height,
 	fb->width = width;
 	fb->height = height;
 	fb->fd = b->drm.fd;
-	fb->fence_fd = -1;
 
 	if (drm_fb_addfb(fb) != 0) {
 		weston_log("failed to create kms fb: %m\n");
@@ -1046,7 +1041,6 @@ drm_fb_get_from_dmabuf(struct linux_dmabuf_buffer *dmabuf,
 	fb->modifier = dmabuf->attributes.modifier[0];
 	fb->size = 0;
 	fb->fd = backend->drm.fd;
-	fb->fence_fd = -1;
 
 	if (!fb->format) {
 		weston_log("couldn't look up format info for 0x%lx\n",
@@ -1128,7 +1122,6 @@ drm_fb_get_from_bo(struct gbm_bo *bo, struct drm_backend *backend,
 #endif
 
 	fb->fd = backend->drm.fd;
-	fb->fence_fd = -1;
 
 	if (!fb->format) {
 		weston_log("couldn't look up format 0x%lx\n",
@@ -1211,6 +1204,7 @@ drm_plane_state_alloc(struct drm_output_state *state_output,
 	assert(state);
 	state->output_state = state_output;
 	state->plane = plane;
+	state->in_fence_fd = -1;
 
 	/* Here we only add the plane state to the desired link, and not
 	 * set the member. Having an output pointer set means that the
@@ -1241,6 +1235,8 @@ drm_plane_state_free(struct drm_plane_state *state, bool force)
 	wl_list_remove(&state->link);
 	wl_list_init(&state->link);
 	state->output_state = NULL;
+	if (state->in_fence_fd != -1)
+		close(state->in_fence_fd);
 
 	if (force || state != state->plane->state_cur) {
 		drm_fb_unref(state->fb);
@@ -1730,9 +1726,9 @@ drm_output_assign_state(struct drm_output_state *state,
 		 * The kernel has now ownership of the fence fd,
 		 * so it's a good time to drop our reference.
 		 */
-		if (plane_state->fb && plane_state->fb->fence_fd != -1) {
-			close(plane_state->fb->fence_fd);
-			plane_state->fb->fence_fd = -1;
+		if (plane_state->in_fence_fd != -1) {
+			close(plane_state->in_fence_fd);
+			plane_state->in_fence_fd = -1;
 		}
 
 		if (plane->state_cur && !plane->state_cur->output_state)
@@ -1810,6 +1806,8 @@ drm_output_prepare_scanout_view(struct drm_output_state *output_state,
 	     state->src_h != state->dest_h << 16))
 		goto err;
 
+	state->in_fence_fd = ev->surface->acquire_fence;
+
 	if (mode == DRM_OUTPUT_PROPOSE_STATE_PLANES_ONLY)
 		return state;
 
@@ -1829,16 +1827,16 @@ err:
 }
 
 static struct drm_fb *
-drm_output_render_gl(struct drm_output_state *state, pixman_region32_t *damage)
+drm_output_render_gl(struct drm_output_state *state, pixman_region32_t *damage,
+		     int *fence)
 {
 	struct drm_output *output = state->output;
 	struct drm_backend *b = to_drm_backend(output->base.compositor);
 	struct gbm_bo *bo;
 	struct drm_fb *ret;
-	int fence = -1;
 
 	output->base.compositor->renderer->repaint_output(&output->base,
-							  damage, &fence);
+							  damage, fence);
 
 	bo = gbm_surface_lock_front_buffer(output->gbm_surface);
 	if (!bo) {
@@ -1853,7 +1851,6 @@ drm_output_render_gl(struct drm_output_state *state, pixman_region32_t *damage)
 		return NULL;
 	}
 	ret->gbm_surface = output->gbm_surface;
-	ret->fence_fd = fence;
 
 	return ret;
 }
@@ -1918,7 +1915,9 @@ drm_output_render(struct drm_output_state *state, pixman_region32_t *damage)
 	} else if (b->use_pixman) {
 		fb = drm_output_render_pixman(state, damage);
 	} else {
-		fb = drm_output_render_gl(state, damage);
+		int fence = -1;
+		fb = drm_output_render_gl(state, damage, &fence);
+		scanout_state->in_fence_fd = fence;
 	}
 
 	if (!fb) {
@@ -2302,12 +2301,12 @@ drm_output_apply_state_atomic(struct drm_output_state *state,
 		ret |= plane_add_prop(req, plane, WDRM_PLANE_CRTC_H,
 				      plane_state->dest_h);
 
-		if (plane_state->fb && plane_state->fb->fence_fd != -1) {
+		if (plane_state->in_fence_fd != -1) {
 			weston_log("using in fence: %d for plane: %p\n",
-				   plane_state->fb->fence_fd, plane);
+				   plane_state->in_fence_fd, plane);
 
 			ret |= plane_add_prop(req, plane, WDRM_PLANE_IN_FENCE_FD,
-					      plane_state->fb->fence_fd);
+					      plane_state->in_fence_fd);
 		}
 
 		if (ret != 0) {
@@ -2827,8 +2826,7 @@ drm_output_prepare_overlay_view(struct drm_output_state *output_state,
 		 * reference here to live within the state. */
 		state->fb = drm_fb_ref(fb);
 
-		/* Get the fence from the view's surface */
-		state->fb->fence_fd = ev->surface->acquire_fence;
+		state->in_fence_fd = ev->surface->acquire_fence;
 
 		/* In planes-only mode, we don't have an incremental state to
 		 * test against, so we just hope it'll work. */
@@ -2970,6 +2968,8 @@ drm_output_prepare_cursor_view(struct drm_output_state *output_state,
 
 	plane_state->fb =
 		drm_fb_ref(output->gbm_cursor_fb[output->current_cursor]);
+
+	plane_state->in_fence_fd = ev->surface->acquire_fence;
 
 	if (needs_update)
 		cursor_bo_update(b, plane_state->fb->bo, ev);
