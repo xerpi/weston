@@ -1256,6 +1256,9 @@ drm_plane_state_duplicate(struct drm_output_state *state_output,
 	assert(dst);
 	memcpy(dst, src, sizeof(*dst));
 
+	if (src->in_fence_fd != -1)
+		dst->in_fence_fd = dup(src->in_fence_fd);
+
 	wl_list_for_each_safe(old, tmp, &state_output->plane_list, link) {
 		if (old->plane == dst->plane)
 			drm_plane_state_free(old, false);
