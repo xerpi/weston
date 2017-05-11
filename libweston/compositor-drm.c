@@ -62,8 +62,6 @@
 #include "presentation-time-server-protocol.h"
 #include "linux-dmabuf.h"
 #include "linux-dmabuf-unstable-v1-server-protocol.h"
-#include "linux-explicit-synchronization.h"
-#include "linux-explicit-synchronization-unstable-v1-server-protocol.h"
 
 #ifndef DRM_CAP_TIMESTAMP_MONOTONIC
 #define DRM_CAP_TIMESTAMP_MONOTONIC 0x6
@@ -5848,10 +5846,6 @@ drm_backend_create(struct weston_compositor *compositor,
 			weston_log("Error: initializing dmabuf "
 				   "support failed.\n");
 	}
-
-	if (linux_explicit_synchronization_setup(b->compositor) < 0)
-		weston_log("Error: initializing explicit synchronization "
-			   "support failed.\n");
 
 	compositor->backend = &b->base;
 

@@ -1218,8 +1218,14 @@ struct weston_surface {
 	int32_t height_from_buffer;
 	bool keep_buffer; /* for backends to prevent early release */
 
+	/* Out fence from GPU, in fence to KMS. */
+	int acquire_fence;
+
 	/* wp_viewport resource for this surface */
 	struct wl_resource *viewport_resource;
+
+	/* zcr_synchronization_v1 resource for this surface */
+	struct wl_resource *explicit_sync_resource;
 
 	/* All the pending state, that wl_surface.commit will apply. */
 	struct weston_surface_state pending;
@@ -1262,9 +1268,6 @@ struct weston_surface {
 
 	/* An list of per seat pointer constraints. */
 	struct wl_list pointer_constraints;
-
-	/* Out fence from GPU, in fence to KMS. */
-	int acquire_fence;
 };
 
 struct weston_subsurface {

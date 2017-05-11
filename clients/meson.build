@@ -136,8 +136,8 @@ if get_option('clients_simple')
 			install: true
 		)
 
-		# XXX: wayland-protocols version 1.8?
-		if dep_wp.version().version_compare('>= 1.8')
+		# XXX: wayland-protocols version 1.99?
+		if dep_wp.version().version_compare('>= 1.99')
 			executable('weston-simple-egl-explicit-synchronization',
 				'simple-egl-explicit-synchronization.c',
 				srcs_simple,

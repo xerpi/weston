@@ -20,7 +20,6 @@ srcs_libweston = [
 	'noop-renderer.c',
 	'pixman-renderer.c',
 	'linux-dmabuf.c',
-	'linux-explicit-synchronization.c',
 	'pixel-formats.c',
 	'screenshooter.c',
 	'../shared/file-util.c',
