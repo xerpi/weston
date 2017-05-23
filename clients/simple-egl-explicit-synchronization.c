@@ -567,7 +567,7 @@ create_sync(struct display *display, int fd)
 					EGL_SYNC_NATIVE_FENCE_ANDROID,
 					attrib_list);
 }
-
+#include <linux/sync_file.h>
 static void
 redraw(void *data, struct wl_callback *callback, uint32_t time)
 {
@@ -641,7 +641,8 @@ redraw(void *data, struct wl_callback *callback, uint32_t time)
 	glEnableVertexAttribArray(window->gl.pos);
 	glEnableVertexAttribArray(window->gl.col);
 
-	glDrawArrays(GL_TRIANGLES, 0, 3);
+	for (int i = 0; i < 40000; i++)
+		glDrawArrays(GL_TRIANGLES, 0, 3);
 
 	glDisableVertexAttribArray(window->gl.pos);
 	glDisableVertexAttribArray(window->gl.col);
@@ -678,10 +679,22 @@ redraw(void *data, struct wl_callback *callback, uint32_t time)
 		if (gpu_fence != EGL_NO_SYNC_KHR) {
 			int fence_fd;
 
+			/*
+			 * The Flush() operation causes a new native fence object
+			 * to be created (file descriptor in our case).
+			 */
+			glFlush();
+
 			fence_fd = display->egl_dup_native_fence_fd_android(
 						display->egl.dpy, gpu_fence);
 
 			display->egl_destroy_sync(display->egl.dpy, gpu_fence);
+
+			struct sync_file_info info;
+			memset(&info, 0, sizeof(info));
+			int ret = ioctl(fence_fd, SYNC_IOC_FILE_INFO, &info);
+			printf("ioctl: %d, fence status: %d\n", ret, info.status);
+
 
 			zcr_synchronization_v1_set_acquire_fence(
 					window->synchronization, fence_fd);

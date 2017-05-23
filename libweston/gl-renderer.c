@@ -39,6 +39,7 @@
 #include <assert.h>
 #include <unistd.h>
 #include <linux/input.h>
+#include <linux/sync_file.h>
 #include <drm_fourcc.h>
 
 #include "gl-renderer.h"
@@ -678,8 +679,52 @@ repaint_region(struct weston_view *ev, pixman_region32_t *region,
 	glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof *v, &v[2]);
 	glEnableVertexAttribArray(1);
 
+#if 0
+	bool draw = true;
+
 	if (ev->surface->acquire_fence != -1) {
 		EGLSyncKHR sync = create_sync(gr, ev->surface->acquire_fence);
+
+		struct sync_file_info *info;
+		int err, size, num_fences;
+
+		info = malloc(sizeof(*info));
+		memset(info, 0, sizeof(*info));
+
+		err = ioctl(ev->surface->acquire_fence, SYNC_IOC_FILE_INFO, info);
+		num_fences = info->num_fences;
+
+		weston_log("SYNC_IOC_FILE_INFO: %d\n", err);
+
+		weston_log("info->name: %d\n", info->name);
+		weston_log("info->status: %d\n", info->status);
+		weston_log("num_fences: %d\n", num_fences);
+
+		draw = info->status == 1;
+
+		if (num_fences) {
+			info->flags = 0;
+			size = sizeof(struct sync_fence_info) * num_fences;
+			info->num_fences = num_fences;
+			info->sync_fence_info = (uint64_t) calloc(num_fences,
+								  sizeof(struct sync_fence_info));
+
+			err = ioctl(ev->surface->acquire_fence, SYNC_IOC_FILE_INFO, info);
+
+			weston_log("SYNC_IOC_FILE_INFO: %d\n", err);
+
+			struct sync_fence_info *finfo = (struct sync_fence_info *)info->sync_fence_info;
+
+			weston_log("finfo->obj_name: %d\n", finfo->obj_name);
+			weston_log("finfo->driver_name %s\n", finfo->driver_name);
+			weston_log("finfo->status: %d\n", finfo->status);
+
+			free(info->sync_fence_info);
+		}
+
+		free(info);
+
+		weston_log("gl-renderer waitSync: %d, EGLSync: %p\n", ev->surface->acquire_fence, sync);
 
 		if (sync == EGL_NO_SYNC_KHR) {
 			close(ev->surface->acquire_fence);
@@ -691,6 +736,32 @@ repaint_region(struct weston_view *ev, pixman_region32_t *region,
 
 		ev->surface->acquire_fence = -1;
 	}
+#endif
+#if 0
+	if (ev->surface->acquire_fence != -1) {
+		static int lel = -1;
+		if (lel == -1)
+			lel = dup(ev->surface->acquire_fence);
+
+		close(ev->surface->acquire_fence);
+
+		int lol = dup(lel);
+
+		EGLSyncKHR sync = create_sync(gr, lol);
+
+		weston_log("gl-renderer waitSync: %d, EGLSync: %p\n", ev->surface->acquire_fence, sync);
+
+		if (sync == EGL_NO_SYNC_KHR) {
+			close(lol);
+		} else {
+			//gr->wait_sync(gr->egl_display, sync, 0);
+			gr->destroy_sync(gr->egl_display, sync);
+			/* driver now has ownership of the fence fd */
+		}
+
+		ev->surface->acquire_fence = -1;
+	}
+#endif
 
 	for (i = 0, first = 0; i < nfans; i++) {
 		glDrawArrays(GL_TRIANGLE_FAN, first, vtxcnt[i]);

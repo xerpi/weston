@@ -1221,6 +1221,10 @@ struct weston_surface {
 	/* Out fence from GPU, in fence to KMS. */
 	int acquire_fence;
 
+	/* Used to wait for the fence to be signaled */
+	struct wl_event_source *fence_source;
+	struct weston_surface_state fence_pending;
+
 	/* wp_viewport resource for this surface */
 	struct wl_resource *viewport_resource;
 

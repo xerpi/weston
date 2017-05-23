@@ -871,10 +871,10 @@ drm_fb_addfb(struct drm_fb *fb)
 		 * for all planes. */
 #ifdef HAVE_DRM_ADDFB2_MODIFIERS
 		for (i = 0; fb->handles[i]; i++) {
-			weston_log("handle %d: %d, offset %d, stride %d\n", i, fb->handles[i], fb->offsets[i], fb->strides[i]);
+			//weston_log("handle %d: %d, offset %d, stride %d\n", i, fb->handles[i], fb->offsets[i], fb->strides[i]);
 			mods[i] = fb->modifier;
 		}
-		weston_log("modifier: 0x%lx, invalid 0x%lx\n", fb->modifier, (uint64_t) ((1ULL<<56)-1));
+		//weston_log("modifier: 0x%lx, invalid 0x%lx\n", fb->modifier, (uint64_t) ((1ULL<<56)-1));
 		ret = drmModeAddFB2WithModifiers(fb->fd, fb->width, fb->height,
 						 fb->format->format,
 						 fb->handles, fb->strides,
@@ -1106,14 +1106,14 @@ drm_fb_get_from_bo(struct gbm_bo *bo, struct drm_backend *backend,
 
 #ifdef HAVE_GBM_MODIFIERS
 	fb->modifier = gbm_bo_get_modifier(bo);
-	weston_log("mod from GBM: 0x%lx\n", fb->modifier);
+	//weston_log("mod from GBM: 0x%lx\n", fb->modifier);
 	for (i = 0; i < gbm_bo_get_plane_count(bo); i++) {
 		fb->strides[i] = gbm_bo_get_stride_for_plane(bo, i);
 		fb->handles[i] = gbm_bo_get_handle_for_plane(bo, i).u32;
 		fb->offsets[i] = gbm_bo_get_offset(bo, i);
 	}
 #else
-	weston_log("mod from ourselves: 0x%lx\n", fb->modifier);
+	//weston_log("mod from ourselves: 0x%lx\n", fb->modifier);
 	fb->modifier = ((1ULL<<56) - 1);
 	fb->strides[0] = gbm_bo_get_stride(bo);
 	fb->handles[0] = gbm_bo_get_handle(bo).u32;
@@ -1233,8 +1233,10 @@ drm_plane_state_free(struct drm_plane_state *state, bool force)
 	wl_list_remove(&state->link);
 	wl_list_init(&state->link);
 	state->output_state = NULL;
-	if (state->in_fence_fd != -1)
+	if (state->in_fence_fd != -1) {
+		weston_log("closing fence: %d at %s\n", state->in_fence_fd, __func__);
 		close(state->in_fence_fd);
+	}
 
 	if (force || state != state->plane->state_cur) {
 		drm_fb_unref(state->fb);
@@ -1728,6 +1730,7 @@ drm_output_assign_state(struct drm_output_state *state,
 		 * so it's a good time to drop our reference.
 		 */
 		if (plane_state->in_fence_fd != -1) {
+			weston_log("closing fence: %d at %s\n", plane_state->in_fence_fd, __func__);
 			close(plane_state->in_fence_fd);
 			plane_state->in_fence_fd = -1;
 		}
@@ -1808,6 +1811,10 @@ drm_output_prepare_scanout_view(struct drm_output_state *output_state,
 		goto err;
 
 	state->in_fence_fd = ev->surface->acquire_fence;
+	/*
+	 * Ownership of the fence is transferred from the surface to the plane.
+	 */
+	ev->surface->acquire_fence = -1;
 
 	if (mode == DRM_OUTPUT_PROPOSE_STATE_PLANES_ONLY)
 		return state;
@@ -1918,6 +1925,7 @@ drm_output_render(struct drm_output_state *state, pixman_region32_t *damage)
 	} else {
 		int fence = -1;
 		fb = drm_output_render_gl(state, damage, &fence);
+		weston_log("fence from gl-renderer: %d\n", fence);
 		scanout_state->in_fence_fd = fence;
 	}
 
@@ -2237,6 +2245,8 @@ drm_mode_ensure_blob(struct drm_backend *backend, struct drm_mode *mode)
 	return ret;
 }
 
+#include <linux/sync_file.h>
+
 static int
 drm_output_apply_state_atomic(struct drm_output_state *state,
 			      drmModeAtomicReq *req,
@@ -2247,6 +2257,8 @@ drm_output_apply_state_atomic(struct drm_output_state *state,
 	struct drm_plane_state *plane_state;
 	struct drm_mode *current_mode = to_drm_mode(output->base.current_mode);
 	int ret = 0;
+
+	weston_log("############ %s ###########\n", __func__);
 
 	if (state->dpms != output->state_cur->dpms)
 		*flags |= DRM_MODE_ATOMIC_ALLOW_MODESET;
@@ -2275,11 +2287,13 @@ drm_output_apply_state_atomic(struct drm_output_state *state,
 		goto err;
 	}
 
+	weston_log("-------------------------------------------\n");
+
 	wl_list_for_each(plane_state, &state->plane_list, link) {
 		struct drm_plane *plane = plane_state->plane;
 
 		if (plane_state->fb) {
-			weston_log("%s: plane (%d, %d) -> (%d, %d) @ (%d, %d) %s\n", output->base.name, plane_state->src_w >> 16, plane_state->src_h >> 16, plane_state->dest_w, plane_state->dest_h, plane_state->dest_x, plane_state->dest_y, (plane_state->fb->type == BUFFER_GBM_SURFACE) ? "gbm" : (plane_state->fb->type == BUFFER_CLIENT) ? "client" : "other");
+			//weston_log("%s: plane (%d, %d) -> (%d, %d) @ (%d, %d) %s\n", output->base.name, plane_state->src_w >> 16, plane_state->src_h >> 16, plane_state->dest_w, plane_state->dest_h, plane_state->dest_x, plane_state->dest_y, (plane_state->fb->type == BUFFER_GBM_SURFACE) ? "gbm" : (plane_state->fb->type == BUFFER_CLIENT) ? "client" : "other");
 		}
 		ret |= plane_add_prop(req, plane, WDRM_PLANE_FB_ID,
 				      plane_state->fb ? plane_state->fb->fb_id : 0);
@@ -2305,9 +2319,18 @@ drm_output_apply_state_atomic(struct drm_output_state *state,
 		if (plane_state->in_fence_fd != -1) {
 			weston_log("using in fence: %d for plane: %p\n",
 				   plane_state->in_fence_fd, plane);
+			weston_log("  valid: %s\n",
+				fcntl(plane_state->in_fence_fd, F_GETFD) != -1 ? "yes" : "no");
+
+			struct sync_file_info info;
+			memset(&info, 0, sizeof(info));
+			int ret = ioctl( plane_state->in_fence_fd, SYNC_IOC_FILE_INFO, &info);
+			weston_log("  ioctl: %d, status: %d\n", ret, info.status);
 
 			ret |= plane_add_prop(req, plane, WDRM_PLANE_IN_FENCE_FD,
 					      plane_state->in_fence_fd);
+		} else {
+			weston_log("plane: %p has no in fence\n", plane);
 		}
 
 		if (ret != 0) {
@@ -2315,6 +2338,8 @@ drm_output_apply_state_atomic(struct drm_output_state *state,
 			goto err;
 		}
 	}
+
+	weston_log("*******************************************\n");
 
 	return 0;
 
@@ -2501,6 +2526,8 @@ drm_output_repaint(struct weston_output *output_base,
 	struct drm_output_state *state;
 	struct drm_plane_state *scanout_state;
 
+	weston_log("############ %s ###########\n", __func__);
+
 	if (output->disable_pending || output->destroy_pending)
 		goto err;
 
@@ -2546,6 +2573,8 @@ drm_output_start_repaint_loop(struct weston_output *output_base)
 		.request.sequence = 0,
 		.request.signal = 0,
 	};
+
+	weston_log("############ %s ###########\n", __func__);
 
 	if (output->disable_pending || output->destroy_pending)
 		return;
@@ -2828,6 +2857,10 @@ drm_output_prepare_overlay_view(struct drm_output_state *output_state,
 		state->fb = drm_fb_ref(fb);
 
 		state->in_fence_fd = ev->surface->acquire_fence;
+		/*
+		 * Ownership of the fence is transferred from the surface to the plane.
+		 */
+		ev->surface->acquire_fence = -1;
 
 		/* In planes-only mode, we don't have an incremental state to
 		 * test against, so we just hope it'll work. */
@@ -2971,6 +3004,10 @@ drm_output_prepare_cursor_view(struct drm_output_state *output_state,
 		drm_fb_ref(output->gbm_cursor_fb[output->current_cursor]);
 
 	plane_state->in_fence_fd = ev->surface->acquire_fence;
+	/*
+	 * Ownership of the fence is transferred from the surface to the plane.
+	 */
+	ev->surface->acquire_fence = -1;
 
 	if (needs_update)
 		cursor_bo_update(b, plane_state->fb->bo, ev);
@@ -3207,6 +3244,7 @@ drm_assign_planes(struct weston_output *output_base, void *repaint_data)
 	struct weston_view *ev;
 	struct weston_plane *primary = &output_base->compositor->primary_plane;
 
+	weston_log("############ %s ###########\n", __func__);
 
 	state = drm_output_propose_state(output_base, pending_state,
 					 DRM_OUTPUT_PROPOSE_STATE_PLANES_ONLY);

@@ -471,6 +471,7 @@ weston_surface_create(struct weston_compositor *compositor)
 	surface->buffer_viewport.surface.width = -1;
 
 	surface->acquire_fence = -1;
+	surface->fence_source = NULL;
 
 	weston_surface_state_init(&surface->pending);
 
@@ -3120,8 +3121,10 @@ weston_surface_commit_state(struct weston_surface *surface,
 	wl_list_init(&state->feedback_list);
 
 	/* zcr_synchronization_v1.set_acquire_fence */
-	if (surface->acquire_fence != -1)
+	if (surface->acquire_fence != -1) {
+		weston_log("closing fence: %d at %s, state fence: %d\n", surface->acquire_fence, __func__, state->acquire_fence);
 		close(surface->acquire_fence);
+	}
 
 	surface->acquire_fence = state->acquire_fence;
 	state->acquire_fence = -1;
@@ -3130,13 +3133,85 @@ weston_surface_commit_state(struct weston_surface *surface,
 }
 
 static void
-weston_surface_commit(struct weston_surface *surface)
+weston_surface_commit_apply(struct weston_surface *surface,
+			    struct weston_surface_state *pending)
 {
-	weston_surface_commit_state(surface, &surface->pending);
+	weston_surface_commit_state(surface, pending);
 
 	weston_surface_commit_subsurface_order(surface);
 
 	weston_surface_schedule_repaint(surface);
+}
+
+static void
+reset_state(struct weston_surface_state *state)
+{
+	weston_surface_state_set_buffer(state, NULL);
+	state->sx = 0;
+	state->sy = 0;
+	state->newly_attached = 0;
+	state->buffer_viewport.changed = 0;
+	//pixman_region32_clear(&state->damage_surface);
+	wl_list_init(&state->frame_callback_list);
+	wl_list_init(&state->feedback_list);
+	state->acquire_fence = -1;
+}
+
+#include <linux/sync_file.h>
+
+static int
+on_fence_readable(int fd, uint32_t mask, void *data)
+{
+	int ret;
+	struct sync_file_info info;
+	struct weston_surface *surface = data;
+
+	weston_log("on_fence_readable: %d\n", fd);
+	weston_log("    pending fence fd: %d\n",
+		   surface->fence_pending.acquire_fence);
+
+	assert(surface->fence_pending.acquire_fence == fd);
+
+	memset(&info, 0, sizeof(info));
+	ret = ioctl(fd, SYNC_IOC_FILE_INFO, &info);
+
+	if (ret < 0)
+		return ret;
+
+	weston_log("fence status: %d\n", info.status);
+
+	/* if the fence is signaled... */
+	if (info.status == 1) {
+		wl_event_source_remove(surface->fence_source);
+		weston_surface_commit_apply(surface, &surface->fence_pending);
+	}
+
+	return 1;
+}
+
+static void
+weston_surface_commit(struct weston_surface *surface)
+{
+	if (surface->pending.acquire_fence == -1) {
+		weston_surface_commit_apply(surface, &surface->pending);
+	} else {
+		struct weston_compositor *compositor = surface->compositor;
+		struct wl_event_loop *loop =
+			wl_display_get_event_loop(compositor->wl_display);
+
+		surface->fence_pending = surface->pending;
+
+		reset_state(&surface->pending);
+
+		if (surface->fence_source)
+			wl_event_source_remove(surface->fence_source);
+
+		surface->fence_source =
+			wl_event_loop_add_fd(loop, surface->fence_pending.acquire_fence,
+					     WL_EVENT_READABLE,
+					     on_fence_readable, surface);
+
+	}
 }
 
 static void
@@ -5127,8 +5202,10 @@ destroy_synchronization(struct wl_resource *resource)
 	/*
 	 * XXX: Close the fence here?
 	 */
-	if (surface->pending.acquire_fence != -1)
+	if (surface->pending.acquire_fence != -1) {
+		weston_log("closing fence: %d at %s\n", surface->pending.acquire_fence, __func__);
 		close(surface->pending.acquire_fence);
+	}
 
 	surface->pending.acquire_fence = -1;
 }
@@ -5170,8 +5247,15 @@ synchronization_set_acquire_fence(struct wl_client *client,
 	/*
 	 * XXX: Should sending more than one fence before a commit be allowed?
 	 */
-	if (surface->pending.acquire_fence != -1)
+	if (surface->pending.acquire_fence != -1) {
+		weston_log("closing fence: %d at %s\n", surface->pending.acquire_fence, __func__);
 		close(surface->pending.acquire_fence);
+	}
+
+	weston_log("received fence: %d from client: %p\n", fd, client);
+	weston_log("  valid: %s\n",
+			fcntl(fd, F_GETFD) != -1 ? "yes" : "no");
+
 
 	surface->pending.acquire_fence = fd;
 }
