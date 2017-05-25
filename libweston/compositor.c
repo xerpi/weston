@@ -56,6 +56,7 @@
 #include "compositor.h"
 #include "viewporter-server-protocol.h"
 #include "presentation-time-server-protocol.h"
+#include "linux-explicit-synchronization-unstable-v1-server-protocol.h"
 #include "shared/helpers.h"
 #include "shared/os-compatibility.h"
 #include "shared/string-helpers.h"
@@ -5099,6 +5100,117 @@ bind_presentation(struct wl_client *client,
 }
 
 static void
+destroy_synchronization(struct wl_resource *resource)
+{
+	struct weston_surface *surface =
+		wl_resource_get_user_data(resource);
+
+	if (!surface)
+		return;
+
+	surface->explicit_sync_resource = NULL;
+
+	/*
+	 * TODO: Implement it
+	 */
+}
+
+static void
+synchronization_destroy(struct wl_client *client,
+		 struct wl_resource *resource)
+{
+	wl_resource_destroy(resource);
+}
+
+static void
+synchronization_set_acquire_fence(struct wl_client *client,
+				  struct wl_resource *resource,
+				  int32_t fd)
+{
+	struct weston_surface *surface =
+		wl_resource_get_user_data(resource);
+
+	if (!surface) {
+		wl_resource_post_error(resource,
+			ZCR_SYNCHRONIZATION_V1_ERROR_NO_SURFACE,
+			"wl_surface for this explicit synchronization object no longer exists");
+		return;
+	}
+
+	assert(surface->explicit_sync_resource == resource);
+	assert(surface->resource);
+
+	/*
+	 * TODO: Implement it
+	 */
+}
+
+static const struct zcr_synchronization_v1_interface synchronization_interface = {
+	synchronization_destroy,
+	synchronization_set_acquire_fence,
+};
+
+static void
+explicit_synchronization_destroy(struct wl_client *client,
+		   struct wl_resource *resource)
+{
+	wl_resource_destroy(resource);
+}
+
+static void
+explicit_synchronization_get_synchroniztion(struct wl_client *client,
+			struct wl_resource *viewporter,
+			uint32_t id,
+			struct wl_resource *surface_resource)
+{
+	int version = wl_resource_get_version(viewporter);
+	struct weston_surface *surface =
+		wl_resource_get_user_data(surface_resource);
+	struct wl_resource *resource;
+
+	if (surface->explicit_sync_resource) {
+		wl_resource_post_error(viewporter,
+			ZCR_LINUX_EXPLICIT_SYNCHRONIZATION_V1_ERROR_SYNCHRONIZATION_EXISTS,
+			"an explicit synchronization object already exists for this wl_surface");
+		return;
+	}
+
+	resource = wl_resource_create(client, &zcr_synchronization_v1_interface,
+				      version, id);
+	if (resource == NULL) {
+		wl_client_post_no_memory(client);
+		return;
+	}
+
+	wl_resource_set_implementation(resource, &synchronization_interface,
+				       surface, destroy_synchronization);
+
+	surface->explicit_sync_resource = resource;
+}
+
+static const struct zcr_linux_explicit_synchronization_v1_interface explicit_synchronization_interface = {
+	explicit_synchronization_destroy,
+	explicit_synchronization_get_synchroniztion
+};
+
+static void
+bind_linux_explicit_synchronization(struct wl_client *client,
+				    void *data, uint32_t version, uint32_t id)
+{
+	struct wl_resource *resource;
+
+	resource = wl_resource_create(client, &zcr_linux_explicit_synchronization_v1_interface,
+				      version, id);
+	if (resource == NULL) {
+		wl_client_post_no_memory(client);
+		return;
+	}
+
+	wl_resource_set_implementation(resource, &explicit_synchronization_interface,
+				       NULL, NULL);
+}
+
+static void
 compositor_bind(struct wl_client *client,
 		void *data, uint32_t version, uint32_t id)
 {
@@ -5207,6 +5319,11 @@ weston_compositor_create(struct wl_display *display, void *user_data)
 
 	if (!wl_global_create(ec->wl_display, &wp_presentation_interface, 1,
 			      ec, bind_presentation))
+		goto fail;
+
+	if (!wl_global_create(ec->wl_display,
+			      &zcr_linux_explicit_synchronization_v1_interface, 1,
+			      ec, bind_linux_explicit_synchronization))
 		goto fail;
 
 	if (weston_input_init(ec) != 0)

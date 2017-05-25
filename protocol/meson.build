@@ -66,6 +66,14 @@ gen_xdg_shell6_client = gen_scanner_client.process(proto_xdg6)
 gen_xdg_shell6_server = gen_scanner_server.process(proto_xdg6)
 gen_xdg_shell6_impl = gen_scanner_impl.process(proto_xdg6)
 
+# XXX: wayland-protocols version 1.99?
+if dep_wp.version().version_compare('>= 1.99')
+	proto_explicit_sync = '@0@/chromium/linux-explicit-synchronization/linux-explicit-synchronization-unstable-v1.xml'.format(dir_wp_base)
+	gen_explicit_sync_client = gen_scanner_client.process(proto_explicit_sync)
+	gen_explicit_sync_server = gen_scanner_server.process(proto_explicit_sync)
+	gen_explicit_sync_impl = gen_scanner_impl.process(proto_explicit_sync)
+endif
+
 
 proto_desktop_shell = 'weston-desktop-shell.xml'
 gen_desktop_shell_server = gen_scanner_server.process(proto_desktop_shell)

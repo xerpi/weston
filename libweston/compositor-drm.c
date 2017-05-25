@@ -162,6 +162,7 @@ enum wdrm_plane_property {
 	WDRM_PLANE_FB_ID,
 	WDRM_PLANE_CRTC_ID,
 	WDRM_PLANE_IN_FORMATS,
+	WDRM_PLANE_IN_FENCE_FD,
 	WDRM_PLANE__COUNT
 };
 
@@ -3646,6 +3647,7 @@ drm_plane_create(struct drm_backend *b, const drmModePlane *kplane,
 		[WDRM_PLANE_FB_ID] = { .name = "FB_ID", },
 		[WDRM_PLANE_CRTC_ID] = { .name = "CRTC_ID", },
 		[WDRM_PLANE_IN_FORMATS] = { .name = "IN_FORMATS", },
+		[WDRM_PLANE_IN_FENCE_FD] = { .name = "IN_FENCE_FD", },
 	};
 
 	/* With universal planes, everything is a DRM plane; without

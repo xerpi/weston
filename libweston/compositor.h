@@ -1218,6 +1218,9 @@ struct weston_surface {
 	/* wp_viewport resource for this surface */
 	struct wl_resource *viewport_resource;
 
+	/* zcr_synchronization_v1 resource for this surface */
+	struct wl_resource *explicit_sync_resource;
+
 	/* All the pending state, that wl_surface.commit will apply. */
 	struct weston_surface_state pending;
 
