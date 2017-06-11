@@ -1136,6 +1136,9 @@ struct weston_surface_state {
 	/* wp_viewport.set_source */
 	/* wp_viewport.set_destination */
 	struct weston_buffer_viewport buffer_viewport;
+
+	/* zcr_synchronization_v1.set_acquire_fence */
+	int acquire_fence;
 };
 
 struct weston_surface_activation_data {
@@ -1223,6 +1226,13 @@ struct weston_surface {
 
 	/* All the pending state, that wl_surface.commit will apply. */
 	struct weston_surface_state pending;
+
+	/* Out fence from GPU, in fence to KMS. */
+	// int acquire_fence;
+
+	/* Used to wait for the fence to be signaled */
+	struct wl_event_source *fence_source;
+	struct weston_surface_state fence_pending;
 
 	/* Matrices representating of the full transformation between
 	 * buffer and surface coordinates.  These matrices are updated
