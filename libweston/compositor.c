@@ -44,6 +44,7 @@
 #include <unistd.h>
 #include <math.h>
 #include <linux/input.h>
+#include <linux/sync_file.h>
 #include <dlfcn.h>
 #include <signal.h>
 #include <setjmp.h>
@@ -410,6 +411,8 @@ weston_surface_state_init(struct weston_surface_state *state)
 	state->buffer_viewport.buffer.src_width = wl_fixed_from_int(-1);
 	state->buffer_viewport.surface.width = -1;
 	state->buffer_viewport.changed = 0;
+
+	state->acquire_fence = -1;
 }
 
 static void
@@ -431,6 +434,10 @@ weston_surface_state_fini(struct weston_surface_state *state)
 	if (state->buffer)
 		wl_list_remove(&state->buffer_destroy_listener.link);
 	state->buffer = NULL;
+
+	if (state->acquire_fence != -1)
+		close(state->acquire_fence);
+	state->acquire_fence = -1;
 }
 
 static void
@@ -468,7 +475,11 @@ weston_surface_create(struct weston_compositor *compositor)
 	surface->buffer_viewport.buffer.src_width = wl_fixed_from_int(-1);
 	surface->buffer_viewport.surface.width = -1;
 
+	surface->fence_source = NULL;
+	//surface->acquire_fence = -1;
+
 	weston_surface_state_init(&surface->pending);
+	weston_surface_state_init(&surface->fence_pending);
 
 	pixman_region32_init(&surface->damage);
 	pixman_region32_init(&surface->opaque);
@@ -1808,6 +1819,7 @@ weston_surface_reset_pending_buffer(struct weston_surface *surface)
 	surface->pending.sy = 0;
 	surface->pending.newly_attached = 0;
 	surface->pending.buffer_viewport.changed = 0;
+	surface->pending.acquire_fence = -1;
 }
 
 WL_EXPORT void
@@ -1857,7 +1869,11 @@ weston_surface_destroy(struct weston_surface *surface)
 	wl_list_for_each_safe(ev, nv, &surface->views, surface_link)
 		weston_view_destroy(ev);
 
+	if (surface->fence_source)
+		wl_event_source_remove(surface->fence_source);
+
 	weston_surface_state_fini(&surface->pending);
+	weston_surface_state_fini(&surface->fence_pending);
 
 	weston_buffer_reference(&surface->buffer_ref, NULL);
 
@@ -1954,6 +1970,7 @@ weston_buffer_reference(struct weston_buffer_reference *ref,
 			assert(wl_resource_get_client(ref->buffer->resource));
 			wl_resource_queue_event(ref->buffer->resource,
 						WL_BUFFER_RELEASE);
+			weston_log("WL_BUFFER_RELEASE on: %p\n", ref->buffer);
 		}
 		wl_list_remove(&ref->destroy_listener.link);
 	}
@@ -2288,6 +2305,12 @@ weston_output_repaint(struct weston_output *output, void *repaint_data)
 		 * same surface.
 		 */
 		if (ev->surface->output == output) {
+			if (ev->surface->get_label) {
+				char name[512];
+				ev->surface->get_label(ev->surface, name, sizeof(name));
+				weston_log("getting frame cb for surface: %s\n", name);
+			}
+
 			wl_list_insert_list(&frame_callback_list,
 					    &ev->surface->frame_callback_list);
 			wl_list_init(&ev->surface->frame_callback_list);
@@ -3044,6 +3067,10 @@ weston_surface_commit_state(struct weston_surface *surface,
 	/* wp_viewport.set_destination */
 	surface->buffer_viewport = state->buffer_viewport;
 
+	/* zcr_synchronization_v1.set_acquire_fence */
+	//surface->acquire_fence = state->acquire_fence;
+	//state->acquire_fence = -1;
+
 	/* wl_surface.attach */
 	if (state->newly_attached)
 		weston_surface_attach(surface, state->buffer);
@@ -3116,13 +3143,111 @@ weston_surface_commit_state(struct weston_surface *surface,
 }
 
 static void
-weston_surface_commit(struct weston_surface *surface)
+weston_surface_commit_apply(struct weston_surface *surface, struct weston_surface_state *pending)
 {
-	weston_surface_commit_state(surface, &surface->pending);
+	weston_log("applying weston_surface_commit_apply, pending->fd: %d, buffer: %p\n", pending->acquire_fence, pending->buffer);
+	weston_surface_commit_state(surface, pending);
 
 	weston_surface_commit_subsurface_order(surface);
 
 	weston_surface_schedule_repaint(surface);
+}
+
+bool
+has_fence_signaled(int fd)
+{
+	int ret;
+	struct sync_file_info info;
+
+	memset(&info, 0, sizeof(info));
+	ret = ioctl(fd, SYNC_IOC_FILE_INFO, &info);
+
+	if (ret < 0)
+		return false;
+
+	return info.status == 1;
+}
+
+static int
+on_fence_readable(int fd, uint32_t mask, void *data)
+{
+	bool signaled;
+	struct weston_surface *surface = data;
+
+	assert(surface->fence_pending.acquire_fence == fd);
+
+	signaled = has_fence_signaled(fd);
+
+	weston_log("on_fence_readable: %d, signaled: %d\n", fd, signaled);
+
+	if (signaled) {
+		wl_event_source_remove(surface->fence_source);
+		surface->fence_source = NULL;
+
+		/*
+		 * Now we can drop the reference to the old buffer.
+		 */
+		//weston_buffer_reference(&surface->buffer_ref, NULL);
+
+		weston_surface_commit_apply(surface, &surface->fence_pending);
+		weston_surface_state_init(&surface->fence_pending);
+		//surface->keep_buffer = false;
+	}
+
+	return 1;
+}
+
+
+static void
+weston_surface_commit(struct weston_surface *surface)
+{
+	if (surface->get_label) {
+		char name[512];
+		surface->get_label(surface, name, sizeof(name));
+		if(strstr(name, "cursor") == NULL)
+			weston_log("weston_surface_commit, surface: %s, cur fd: %d, signaled: %d\n",
+				name,
+				surface->pending.acquire_fence,
+				has_fence_signaled(surface->pending.acquire_fence));
+	} else {
+		weston_log("weston_surface_commit, surface: %p, cur fd: %d, signaled: %d\n",
+			surface,
+			surface->pending.acquire_fence,
+			has_fence_signaled(surface->pending.acquire_fence));
+	}
+
+	/*
+	 * If we are currently waiting for a fence, cancel it.
+	 */
+	if (surface->fence_source) {
+		wl_event_source_remove(surface->fence_source);
+		surface->fence_source = NULL;
+	}
+
+	if (surface->pending.acquire_fence == -1) {
+		weston_surface_commit_apply(surface, &surface->pending);
+	} else {
+		struct weston_compositor *compositor = surface->compositor;
+		struct wl_event_loop *loop =
+			wl_display_get_event_loop(compositor->wl_display);
+
+		/*
+		 * Add a reference to the current buffer since we want
+		 * to use it until we get the fence signaled.
+		 */
+		//weston_buffer_reference(&surface->buffer_ref,
+		//			surface->pending.buffer);
+
+		surface->fence_pending = surface->pending;
+		//surface->keep_buffer = true;
+
+		surface->fence_source =
+			wl_event_loop_add_fd(loop, surface->pending.acquire_fence,
+					     WL_EVENT_READABLE,
+					     on_fence_readable, surface);
+
+		weston_surface_state_init(&surface->pending);
+	}
 }
 
 static void
@@ -5141,8 +5266,16 @@ synchronization_set_acquire_fence(struct wl_client *client,
 	assert(surface->resource);
 
 	/*
-	 * TODO: Implement it
+	 * TODO: Allow to set more than one fence within a single commit?
 	 */
+	if (surface->pending.acquire_fence != -1)
+		close(surface->pending.acquire_fence);
+
+	/*
+	 * TODO: Check fd to be a valid fence fd somehow?
+	 */
+	surface->pending.acquire_fence = fd;
+	weston_log("set_acquire_fence: %d\n", fd);
 }
 
 static const struct zcr_synchronization_v1_interface synchronization_interface = {

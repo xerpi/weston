@@ -870,10 +870,10 @@ drm_fb_addfb(struct drm_fb *fb)
 		 * for all planes. */
 #ifdef HAVE_DRM_ADDFB2_MODIFIERS
 		for (i = 0; fb->handles[i]; i++) {
-			weston_log("handle %d: %d, offset %d, stride %d\n", i, fb->handles[i], fb->offsets[i], fb->strides[i]);
+			//weston_log("handle %d: %d, offset %d, stride %d\n", i, fb->handles[i], fb->offsets[i], fb->strides[i]);
 			mods[i] = fb->modifier;
 		}
-		weston_log("modifier: 0x%lx, invalid 0x%lx\n", fb->modifier, (uint64_t) ((1ULL<<56)-1));
+		//weston_log("modifier: 0x%lx, invalid 0x%lx\n", fb->modifier, (uint64_t) ((1ULL<<56)-1));
 		ret = drmModeAddFB2WithModifiers(fb->fd, fb->width, fb->height,
 						 fb->format->format,
 						 fb->handles, fb->strides,
@@ -1105,14 +1105,14 @@ drm_fb_get_from_bo(struct gbm_bo *bo, struct drm_backend *backend,
 
 #ifdef HAVE_GBM_MODIFIERS
 	fb->modifier = gbm_bo_get_modifier(bo);
-	weston_log("mod from GBM: 0x%lx\n", fb->modifier);
+	//weston_log("mod from GBM: 0x%lx\n", fb->modifier);
 	for (i = 0; i < gbm_bo_get_plane_count(bo); i++) {
 		fb->strides[i] = gbm_bo_get_stride_for_plane(bo, i);
 		fb->handles[i] = gbm_bo_get_handle_for_plane(bo, i).u32;
 		fb->offsets[i] = gbm_bo_get_offset(bo, i);
 	}
 #else
-	weston_log("mod from ourselves: 0x%lx\n", fb->modifier);
+	//weston_log("mod from ourselves: 0x%lx\n", fb->modifier);
 	fb->modifier = ((1ULL<<56) - 1);
 	fb->strides[0] = gbm_bo_get_stride(bo);
 	fb->handles[0] = gbm_bo_get_handle(bo).u32;
@@ -1661,13 +1661,13 @@ drm_output_update_complete(struct drm_output *output, uint32_t flags,
 	} else if (output->dpms_off_pending) {
 		struct drm_pending_state *pending = drm_pending_state_alloc(b);
 		drm_output_get_disable_state(pending, output);
-		weston_log("%s (con %d, crtc %d): applying DPMS off\n", output->base.name, output->connector_id, output->crtc_id);
+		//weston_log("%s (con %d, crtc %d): applying DPMS off\n", output->base.name, output->connector_id, output->crtc_id);
 		drm_pending_state_apply(pending);
 	}
 
 	ts.tv_sec = sec;
 	ts.tv_nsec = usec * 1000;
-	weston_log("%s: finish_frame (update_complete)\n", output->base.name);
+	//weston_log("%s: finish_frame (update_complete)\n", output->base.name);
 	weston_output_finish_frame(&output->base, &ts, flags);
 
 	/* We can't call this from frame_notify, because the output's
@@ -2231,7 +2231,7 @@ drm_output_apply_state_atomic(struct drm_output_state *state,
 		*flags |= DRM_MODE_ATOMIC_ALLOW_MODESET;
 
 	if (state->dpms == WESTON_DPMS_ON) {
-		weston_log("%s (con %d, crtc %d, flags 0x%x): applying output state: alive!\n", output->base.name, output->connector_id, output->crtc_id, *flags);
+		//weston_log("%s (con %d, crtc %d, flags 0x%x): applying output state: alive!\n", output->base.name, output->connector_id, output->crtc_id, *flags);
 		ret = drm_mode_ensure_blob(backend, current_mode);
 		if (ret != 0)
 			goto err;
@@ -2242,7 +2242,7 @@ drm_output_apply_state_atomic(struct drm_output_state *state,
 		ret |= connector_add_prop(req, output, WDRM_CONNECTOR_CRTC_ID,
 					  output->crtc_id);
 	} else {
-		weston_log("%s (con %d, crtc %d): applying output state: DPMS OFF\n", output->base.name, output->connector_id, output->crtc_id);
+		//weston_log("%s (con %d, crtc %d): applying output state: DPMS OFF\n", output->base.name, output->connector_id, output->crtc_id);
 		ret |= crtc_add_prop(req, output, WDRM_CRTC_MODE_ID, 0);
 		ret |= crtc_add_prop(req, output, WDRM_CRTC_ACTIVE, 0);
 		ret |= connector_add_prop(req, output, WDRM_CONNECTOR_CRTC_ID,
@@ -2258,7 +2258,7 @@ drm_output_apply_state_atomic(struct drm_output_state *state,
 		struct drm_plane *plane = plane_state->plane;
 
 		if (plane_state->fb) {
-			weston_log("%s: plane (%d, %d) -> (%d, %d) @ (%d, %d) %s\n", output->base.name, plane_state->src_w >> 16, plane_state->src_h >> 16, plane_state->dest_w, plane_state->dest_h, plane_state->dest_x, plane_state->dest_y, (plane_state->fb->type == BUFFER_GBM_SURFACE) ? "gbm" : (plane_state->fb->type == BUFFER_CLIENT) ? "client" : "other");
+			//weston_log("%s: plane (%d, %d) -> (%d, %d) @ (%d, %d) %s\n", output->base.name, plane_state->src_w >> 16, plane_state->src_h >> 16, plane_state->dest_w, plane_state->dest_h, plane_state->dest_x, plane_state->dest_y, (plane_state->fb->type == BUFFER_GBM_SURFACE) ? "gbm" : (plane_state->fb->type == BUFFER_CLIENT) ? "client" : "other");
 		}
 		ret |= plane_add_prop(req, plane, WDRM_PLANE_FB_ID,
 				      plane_state->fb ? plane_state->fb->fb_id : 0);
@@ -2804,8 +2804,12 @@ drm_output_prepare_overlay_view(struct drm_output_state *output_state,
 			goto out;
 
 		ret = drm_pending_state_test(output_state->pending_state);
-		if (ret == 0)
+		if (ret == 0) {
+			weston_log("drm_output_prepare_overlay_view:\n");
+			weston_log("    ev->surface.fence_pending.fd: %d\n",
+				 ev->surface->fence_pending.acquire_fence);
 			goto out;
+		}
 
 		drm_plane_state_put_back(state);
 		state = NULL;
