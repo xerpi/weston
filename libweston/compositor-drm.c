@@ -2375,7 +2375,9 @@ drm_pending_state_apply_atomic(struct drm_pending_state *pending_state,
 		flags |= DRM_MODE_ATOMIC_TEST_ONLY;
 	else
 		flags |= DRM_MODE_PAGE_FLIP_EVENT | DRM_MODE_ATOMIC_NONBLOCK;
+
 	ret = drmModeAtomicCommit(b->drm.fd, req, flags, b);
+	weston_log("atomic commit issued, ret: %d\n", ret);
 
 	if (mode == DRM_PENDING_STATE_TEST)
 		return ret;
@@ -2605,6 +2607,8 @@ vblank_handler(int fd, unsigned int frame, unsigned int sec, unsigned int usec,
 	struct drm_backend *b = to_drm_backend(output->base.compositor);
 	uint32_t flags = WP_PRESENTATION_FEEDBACK_KIND_HW_COMPLETION |
 			 WP_PRESENTATION_FEEDBACK_KIND_HW_CLOCK;
+
+	weston_log("vblank_handler\n");
 
 	assert(!b->atomic_modeset);
 

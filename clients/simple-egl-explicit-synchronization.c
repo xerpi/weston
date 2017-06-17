@@ -138,7 +138,7 @@ static const char *frag_shader_text =
 	"  int i;\n"
 	"  vec4 col1 = v_color;\n"
 	"  vec4 col2 = v_color;\n"
-	"  for (i = 0; i < 750000; i++) {\n"
+	"  for (i = 0; i < 100000; i++) {\n"
 	"    col2 = col1 * col1;\n"
 	"    col1 = sqrt(col2);\n"
 	"  }\n"
@@ -745,7 +745,7 @@ pointer_handle_enter(void *data, struct wl_pointer *pointer,
 	struct wl_cursor_image *image;
 
 	if (display->window->fullscreen)
-		wl_pointer_set_cursor(pointer, serial, NULL, 0, 0);
+		;//wl_pointer_set_cursor(pointer, serial, NULL, 0, 0);
 	else if (cursor) {
 		image = display->default_cursor->images[0];
 		buffer = wl_cursor_image_get_buffer(image);
