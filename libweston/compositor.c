@@ -1856,6 +1856,18 @@ weston_surface_destroy(struct weston_surface *surface)
 	struct weston_view *ev, *nv;
 	struct weston_pointer_constraint *constraint, *next_constraint;
 
+	if (surface->pending.acquire_fence != -1) {
+		close(surface->pending.acquire_fence);
+		surface->pending.acquire_fence = -1;
+	}
+
+	if (surface->fence_source) {
+		wl_event_source_remove(surface->fence_source);
+		surface->fence_source = NULL;
+		close(surface->fence_pending.acquire_fence);
+		surface->fence_pending.acquire_fence = -1;
+	}
+
 	if (--surface->ref_count > 0)
 		return;
 
@@ -1873,7 +1885,6 @@ weston_surface_destroy(struct weston_surface *surface)
 		wl_event_source_remove(surface->fence_source);
 
 	weston_surface_state_fini(&surface->pending);
-	weston_surface_state_fini(&surface->fence_pending);
 
 	weston_buffer_reference(&surface->buffer_ref, NULL);
 
@@ -1908,6 +1919,9 @@ destroy_surface(struct wl_resource *resource)
 
 	if (surface->viewport_resource)
 		wl_resource_set_user_data(surface->viewport_resource, NULL);
+
+	if (surface->explicit_sync_resource)
+		wl_resource_set_user_data(surface->explicit_sync_resource, NULL);
 
 	weston_surface_destroy(surface);
 }
@@ -3163,7 +3177,7 @@ has_fence_signaled(int fd)
 	ret = ioctl(fd, SYNC_IOC_FILE_INFO, &info);
 
 	if (ret < 0)
-		return false;
+		return true;
 
 	return info.status == 1;
 }
@@ -3183,6 +3197,7 @@ on_fence_readable(int fd, uint32_t mask, void *data)
 	if (signaled) {
 		wl_event_source_remove(surface->fence_source);
 		surface->fence_source = NULL;
+		close(fd);
 
 		/*
 		 * Now we can drop the reference to the old buffer.
@@ -3235,8 +3250,8 @@ weston_surface_commit(struct weston_surface *surface)
 		 * Add a reference to the current buffer since we want
 		 * to use it until we get the fence signaled.
 		 */
-		//weston_buffer_reference(&surface->buffer_ref,
-		//			surface->pending.buffer);
+		weston_buffer_reference(&surface->buffer_ref,
+					surface->pending.buffer);
 
 		surface->fence_pending = surface->pending;
 		//surface->keep_buffer = true;
